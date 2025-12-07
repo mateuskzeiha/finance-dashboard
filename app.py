@@ -3,6 +3,7 @@ import pandas as pd
 import requests
 from datetime import datetime
 from pathlib import Path
+import hashlib
 
 # ==========================
 # CONFIG BÁSICA
@@ -14,26 +15,78 @@ st.set_page_config(
     layout="wide"
 )
 
-DATA_DIR = Path("financas_data")
-TX_FILE = DATA_DIR / "transactions.csv"
-ASSETS_FILE = DATA_DIR / "assets.csv"
+DATA_ROOT = Path("financas_data")  # raiz, depois criamos subpastas por usuário
 
 COINGECKO_API_URL = "https://api.coingecko.com/api/v3/simple/price"
 BRAPI_URL = "https://brapi.dev/api/quote"
 
 
 # ==========================
+# LOGIN / USUÁRIOS
+# ==========================
+
+# Usuários "hardcoded" só pra perfil. NÃO use senha real aqui.
+# Você pode adicionar outros depois.
+# Exemplo: "empresa": "sha256(5678)"
+USERS = {
+    "mateus": hashlib.sha256("1234".encode()).hexdigest(),
+}
+
+def check_credentials(username: str, password: str) -> bool:
+    if username not in USERS:
+        return False
+    hash_pass = hashlib.sha256(password.encode()).hexdigest()
+    return hash_pass == USERS[username]
+
+
+def login_page():
+    st.title("🔐 Login – Dashboard Financeiro")
+
+    with st.form("login_form"):
+        username = st.text_input("Usuário")
+        password = st.text_input("Senha", type="password")
+        submitted = st.form_submit_button("Entrar")
+
+    if submitted:
+        if check_credentials(username, password):
+            st.session_state["auth"] = True
+            st.session_state["user"] = username
+            st.success("Login realizado com sucesso.")
+            st.experimental_rerun()
+        else:
+            st.error("Usuário ou senha inválidos.")
+
+
+def require_login():
+    if "auth" not in st.session_state or not st.session_state["auth"]:
+        login_page()
+        st.stop()
+
+
+def get_user_dir() -> Path:
+    """Pasta de dados do usuário logado."""
+    user = st.session_state.get("user", "anon")
+    user_dir = DATA_ROOT / user
+    user_dir.mkdir(parents=True, exist_ok=True)
+    return user_dir
+
+
+def get_tx_file() -> Path:
+    return get_user_dir() / "transactions.csv"
+
+
+def get_assets_file() -> Path:
+    return get_user_dir() / "assets.csv"
+
+
+# ==========================
 # FUNÇÕES DE DADOS
 # ==========================
 
-def ensure_data_dir():
-    DATA_DIR.mkdir(exist_ok=True)
-
-
 def load_transactions():
-    ensure_data_dir()
-    if TX_FILE.exists():
-        df = pd.read_csv(TX_FILE)
+    tx_file = get_tx_file()
+    if tx_file.exists():
+        df = pd.read_csv(tx_file)
         df["date"] = pd.to_datetime(df["date"])
         return df
     else:
@@ -41,18 +94,18 @@ def load_transactions():
 
 
 def save_transactions(df: pd.DataFrame):
-    ensure_data_dir()
-    df.to_csv(TX_FILE, index=False)
+    tx_file = get_tx_file()
+    df.to_csv(tx_file, index=False)
 
 
 def load_assets():
-    ensure_data_dir()
-    if ASSETS_FILE.exists():
-        return pd.read_csv(ASSETS_FILE)
+    assets_file = get_assets_file()
+    if assets_file.exists():
+        return pd.read_csv(assets_file)
     else:
         return pd.DataFrame(columns=[
             "asset_type",        # Cripto, Ação, FII, Imóvel, Carro, Colecionável, Outro
-            "category",          # opcional (ex: Bolsa BR, Exterior, etc.)
+            "category",          # opcional
             "name",              # nome descritivo
             "symbol",            # BTC, PETR4, HGLG11...
             "api_source",        # COINGECKO, BRAPI, MANUAL
@@ -63,8 +116,8 @@ def load_assets():
 
 
 def save_assets(df: pd.DataFrame):
-    ensure_data_dir()
-    df.to_csv(ASSETS_FILE, index=False)
+    assets_file = get_assets_file()
+    df.to_csv(assets_file, index=False)
 
 
 def fetch_crypto_prices_br(api_ids):
@@ -85,7 +138,6 @@ def fetch_crypto_prices_br(api_ids):
 
 
 def fetch_brapi_prices(symbols):
-    """Busca preço atual (em BRL) de ações/FIIs pelo ticker na B3 usando brapi.dev"""
     prices = {}
     for sym in symbols:
         try:
@@ -108,7 +160,6 @@ def fetch_brapi_prices(symbols):
 
 
 def compute_assets_values(df_assets: pd.DataFrame) -> pd.DataFrame:
-    """Retorna df com colunas current_price_brl e value_brl preenchidas"""
     if df_assets.empty:
         df = df_assets.copy()
         df["current_price_brl"] = 0.0
@@ -134,19 +185,14 @@ def compute_assets_values(df_assets: pd.DataFrame) -> pd.DataFrame:
     if stock_prices:
         df.loc[mask_brapi, "current_price_brl"] = df.loc[mask_brapi, "api_id"].map(stock_prices).fillna(0.0)
 
-    # MANUAL – usa o preço informado
+    # MANUAL
     mask_manual = df["api_source"] == "MANUAL"
     df.loc[mask_manual, "current_price_brl"] = df.loc[mask_manual, "manual_price_brl"]
 
-    # valor total
     df["value_brl"] = df["current_price_brl"] * df["quantity"].clip(lower=0)
 
     return df
 
-
-# ==========================
-# LÓGICA DE RESUMO / PROJEÇÃO
-# ==========================
 
 def compute_monthly_summary(df_tx: pd.DataFrame):
     if df_tx.empty:
@@ -173,7 +219,7 @@ def compute_monthly_summary(df_tx: pd.DataFrame):
 # ==========================
 
 def page_dashboard():
-    st.header("📊 Dashboard financeiro geral")
+    st.header(f"📊 Dashboard financeiro – {st.session_state.get('user', '')}")
 
     df_tx = load_transactions()
     df_assets = load_assets()
@@ -181,7 +227,6 @@ def page_dashboard():
 
     summary = compute_monthly_summary(df_tx)
 
-    # Métricas principais
     cash_balance = summary["cumulative_balance"].iloc[-1] if not summary.empty else 0.0
     total_assets = df_assets_val["value_brl"].sum() if not df_assets_val.empty else 0.0
     net_worth = cash_balance + total_assets
@@ -202,12 +247,11 @@ def page_dashboard():
 
     st.markdown("---")
 
-    # Botões de navegação
     c1, c2 = st.columns(2)
     with c1:
         if st.button("➕ Lançar receita / despesa", use_container_width=True):
             st.session_state["current_page"] = "Lançamentos"
-            st.rerun()
+            st.experimental_rerun()
     with c2:
         if st.button("🏦 Atualizar patrimônio / investimentos", use_container_width=True):
             st.session_state["current_page"] = "Patrimônio / Investimentos"
@@ -217,7 +261,6 @@ def page_dashboard():
 
     col_left, col_right = st.columns([2, 1])
 
-    # Evolução financeira
     with col_left:
         st.subheader("Evolução financeira (caixa x patrimônio líquido)")
         if summary.empty:
@@ -230,7 +273,6 @@ def page_dashboard():
             }, index=summary["year_month"])
             st.line_chart(chart_df)
 
-    # Alocação de patrimônio
     with col_right:
         st.subheader("Alocação do patrimônio por tipo")
         if df_assets_val.empty or total_assets == 0:
@@ -307,11 +349,10 @@ def page_patrimonio():
             category = st.text_input("Categoria (opcional)", placeholder="Ex.: Bolsa BR, Exterior, Patrimônio pessoal...")
         with col2:
             name = st.text_input("Nome do ativo", placeholder="Ex.: Bitcoin, PETR4, Casa Praia")
-            symbol = st.text_input("Símbolo / Ticker", placeholder="BTC, PETR4, HGLG11... (para cripto/ações/FII)")
+            symbol = st.text_input("Símbolo / Ticker", placeholder="BTC, PETR4, HGLG11...")
         with col3:
             quantity = st.number_input("Quantidade", min_value=0.0, step=1.0, format="%.4f")
 
-        # preço manual (para imóveis, carros etc)
         manual_price = st.number_input(
             "Preço unitário manual (R$) – use para bens sem cotação automática",
             min_value=0.0,
@@ -325,14 +366,6 @@ def page_patrimonio():
         if not name:
             st.warning("Informe ao menos o nome do ativo.")
         else:
-            # Define fonte de preço
-            if asset_type == "Cripto":
-                api_source = "COINGECKO"
-                api_id = st.text_input  # placeholder só pra não quebrar o linter
-            if asset_type == "Cripto":
-                # para cripto, usar CoinGecko ID no campo "symbol" se o user quiser
-                # mas vamos perguntar direito:
-                st.warning("Para cripto, edite depois o arquivo CSV se quiser trocar o ID. Aqui vamos usar o símbolo como ID.")
             if asset_type == "Cripto":
                 api_source = "COINGECKO"
                 api_id_val = symbol.lower()
@@ -360,7 +393,6 @@ def page_patrimonio():
                 if df_assets.empty:
                     df_assets = pd.DataFrame([new_row])
                 else:
-                    # Regra simples: se existir um ativo com mesmo tipo + símbolo + nome, atualiza
                     mask = (
                         (df_assets["asset_type"] == asset_type) &
                         (df_assets["name"] == name) &
@@ -373,7 +405,7 @@ def page_patrimonio():
 
                 save_assets(df_assets)
                 st.success("Patrimônio/investimento salvo/atualizado.")
-                df_assets = load_assets()  # recarrega
+                df_assets = load_assets()
 
     st.subheader("Visão do patrimônio")
 
@@ -428,6 +460,8 @@ def page_patrimonio():
 # ==========================
 
 def main():
+    require_login()  # força login antes de qualquer coisa
+
     if "current_page" not in st.session_state:
         st.session_state["current_page"] = "Dashboard"
 
@@ -435,11 +469,18 @@ def main():
 
     with st.sidebar:
         st.title("💰 Finanças Pessoais")
+        st.caption(f"Usuário: {st.session_state.get('user', '')}")
+
         selected = st.radio(
             "Navegação",
             pages,
             index=pages.index(st.session_state["current_page"])
         )
+
+        st.markdown("---")
+        if st.button("Sair (logout)"):
+            st.session_state.clear()
+            st.experimental_rerun()
 
     st.session_state["current_page"] = selected
 
@@ -454,4 +495,3 @@ def main():
 if __name__ == "__main__":
     main()
 
-    ##python -m streamlit run app.py
