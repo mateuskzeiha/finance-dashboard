@@ -65,33 +65,109 @@ def init_empty_user_frames():
         )
 
 
-def load_user_data(email: str):
-    """Carrega os dados do usuário pelo e-mail e joga no session_state."""
-    data_all = load_all_data()
-    user_data = data_all.get(email)
+def normalize_df_receitas_despesas(df: pd.DataFrame) -> pd.DataFrame:
+    """Garante colunas padrão para receitas/despesas, especialmente 'Valor'."""
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["Data", "Categoria", "Descrição", "Valor"])
 
-    if user_data:
-        st.session_state["df_receitas"] = pd.DataFrame(
-            user_data.get("receitas", [])
+    df = df.copy()
+
+    # Garante colunas mínimas
+    for col in ["Data", "Categoria", "Descrição"]:
+        if col not in df.columns:
+            df[col] = ""
+
+    # Garante coluna Valor
+    if "Valor" not in df.columns:
+        possiveis = [c for c in df.columns if "valor" in c.lower()]
+        if possiveis:
+            df["Valor"] = df[possiveis[0]]
+        else:
+            df["Valor"] = 0.0
+
+    # Reordena colunas
+    df = df[["Data", "Categoria", "Descrição", "Valor"]]
+    return df
+
+
+def normalize_df_patrimonio(df: pd.DataFrame) -> pd.DataFrame:
+    """Garante colunas padrão para patrimônio, incluindo 'Valor_Total_R$'."""
+    if df is None or df.empty:
+        return pd.DataFrame(
+            columns=[
+                "Data",
+                "Tipo",
+                "Ativo",
+                "Quantidade",
+                "Preço_R$",
+                "Valor_Total_R$",
+            ]
         )
-        st.session_state["df_despesas"] = pd.DataFrame(
-            user_data.get("despesas", [])
-        )
-        st.session_state["df_patrimonio"] = pd.DataFrame(
-            user_data.get("patrimonio", [])
-        )
-    else:
-        init_empty_user_frames()
+
+    df = df.copy()
+
+    for col in ["Data", "Tipo", "Ativo", "Quantidade"]:
+        if col not in df.columns:
+            df[col] = "" if col != "Quantidade" else 0.0
+
+    if "Preço_R$" not in df.columns:
+        possiveis_preco = [c for c in df.columns if "preço" in c.lower() or "preco" in c.lower()]
+        if possiveis_preco:
+            df["Preço_R$"] = df[possiveis_preco[0]]
+        else:
+            df["Preço_R$"] = 0.0
+
+    if "Valor_Total_R$" not in df.columns:
+        possiveis_valor = [c for c in df.columns if "valor" in c.lower()]
+        if possiveis_valor:
+            df["Valor_Total_R$"] = df[possiveis_valor[0]]
+        else:
+            # se não tiver, calcula aproximado
+            try:
+                df["Valor_Total_R$"] = df["Quantidade"].astype(float) * df["Preço_R$"].astype(float)
+            except Exception:
+                df["Valor_Total_R$"] = 0.0
+
+    df = df[
+        [
+            "Data",
+            "Tipo",
+            "Ativo",
+            "Quantidade",
+            "Preço_R$",
+            "Valor_Total_R$",
+        ]
+    ]
+    return df
+
+
+def load_user_data(email: str):
+    """Carrega os dados do usuário pelo e-mail e joga no session_state (já normalizado)."""
+    data_all = load_all_data()
+    user_data = data_all.get(email, {})
+
+    df_r = pd.DataFrame(user_data.get("receitas", []))
+    df_d = pd.DataFrame(user_data.get("despesas", []))
+    df_p = pd.DataFrame(user_data.get("patrimonio", []))
+
+    st.session_state["df_receitas"] = normalize_df_receitas_despesas(df_r)
+    st.session_state["df_despesas"] = normalize_df_receitas_despesas(df_d)
+    st.session_state["df_patrimonio"] = normalize_df_patrimonio(df_p)
 
 
 def save_user_data(email: str):
     """Salva os dataframes atuais no JSON, usando o e-mail como chave."""
-    data_all = load_all_data()
+    init_empty_user_frames()
 
+    df_r = normalize_df_receitas_despesas(st.session_state["df_receitas"])
+    df_d = normalize_df_receitas_despesas(st.session_state["df_despesas"])
+    df_p = normalize_df_patrimonio(st.session_state["df_patrimonio"])
+
+    data_all = load_all_data()
     data_all[email] = {
-        "receitas": st.session_state["df_receitas"].to_dict(orient="records"),
-        "despesas": st.session_state["df_despesas"].to_dict(orient="records"),
-        "patrimonio": st.session_state["df_patrimonio"].to_dict(orient="records"),
+        "receitas": df_r.to_dict(orient="records"),
+        "despesas": df_d.to_dict(orient="records"),
+        "patrimonio": df_p.to_dict(orient="records"),
     }
 
     save_all_data(data_all)
@@ -110,8 +186,8 @@ def send_email_code(email_to: str, code: str):
     # ===== AJUSTE AQUI COM SEUS DADOS =====
     smtp_server = "smtp.mail.me.com"
     smtp_port = 587  # TLS
-    smtp_user = "mateuskr@icloud.com"         # seu e-mail iCloud
-    smtp_password = "dklx-aojq-fond-tjfn"      # senha de app gerada na Apple
+    smtp_user = "SEU_EMAIL@icloud.com"         # seu e-mail iCloud
+    smtp_password = "SENHA_DE_APP_ICLOUD"      # senha de app gerada na Apple
     # ======================================
 
     subject = "Seu código de login - Dashboard Financeiro"
@@ -134,7 +210,7 @@ def send_email_code(email_to: str, code: str):
 
 
 # ==============================
-# FUNÇÕES DE COTAÇÃO / PATRIMÔNIO
+# FUNÇÕES DE COTAÇÃO / DATA
 # ==============================
 
 def get_asset_price_brl(asset_type: str, ticker: str):
@@ -178,10 +254,11 @@ def get_asset_price_brl(asset_type: str, ticker: str):
         return None
 
 
-def parse_date_column(df: pd.DataFrame, col: str = "Data"):
-    if col in df.columns and not df.empty:
-        df = df.copy()
-        df[col] = pd.to_datetime(df[col])
+def parse_date_column(df: pd.DataFrame, col: str = "Data") -> pd.DataFrame:
+    if df is None or df.empty or col not in df.columns:
+        return df
+    df = df.copy()
+    df[col] = pd.to_datetime(df[col], errors="coerce")
     return df
 
 
@@ -215,7 +292,7 @@ def login_page():
                 else:
                     st.error("Não foi possível enviar o código por e-mail.")
                     st.info(f"Erro técnico: {err}")
-                    # Se quiser facilitar teste em dev:
+                    # Modo teste
                     st.info(f"(Modo teste) Código gerado: {code}")
 
     elif st.session_state["login_step"] == "code":
@@ -282,13 +359,12 @@ def lancamentos_page():
                     "Descrição": desc_rec,
                     "Valor": float(valor_rec),
                 }
-                st.session_state["df_receitas"] = pd.concat(
-                    [
-                        st.session_state["df_receitas"],
-                        pd.DataFrame([nova_linha]),
-                    ],
-                    ignore_index=True,
-                )
+
+                df_r = st.session_state.get("df_receitas", pd.DataFrame())
+                df_r = normalize_df_receitas_despesas(df_r)
+                df_r = pd.concat([df_r, pd.DataFrame([nova_linha])], ignore_index=True)
+
+                st.session_state["df_receitas"] = df_r
 
                 if "user_email" in st.session_state:
                     save_user_data(st.session_state["user_email"])
@@ -297,8 +373,9 @@ def lancamentos_page():
                 st.rerun()
 
         st.markdown("### Receitas lançadas")
-        if not st.session_state["df_receitas"].empty:
-            st.dataframe(st.session_state["df_receitas"], use_container_width=True)
+        df_r_view = normalize_df_receitas_despesas(st.session_state.get("df_receitas"))
+        if not df_r_view.empty:
+            st.dataframe(df_r_view, use_container_width=True)
         else:
             st.info("Nenhuma receita lançada ainda.")
 
@@ -322,13 +399,12 @@ def lancamentos_page():
                     "Descrição": desc_desp,
                     "Valor": float(valor_desp),
                 }
-                st.session_state["df_despesas"] = pd.concat(
-                    [
-                        st.session_state["df_despesas"],
-                        pd.DataFrame([nova_linha]),
-                    ],
-                    ignore_index=True,
-                )
+
+                df_d = st.session_state.get("df_despesas", pd.DataFrame())
+                df_d = normalize_df_receitas_despesas(df_d)
+                df_d = pd.concat([df_d, pd.DataFrame([nova_linha])], ignore_index=True)
+
+                st.session_state["df_despesas"] = df_d
 
                 if "user_email" in st.session_state:
                     save_user_data(st.session_state["user_email"])
@@ -337,8 +413,9 @@ def lancamentos_page():
                 st.rerun()
 
         st.markdown("### Despesas lançadas")
-        if not st.session_state["df_despesas"].empty:
-            st.dataframe(st.session_state["df_despesas"], use_container_width=True)
+        df_d_view = normalize_df_receitas_despesas(st.session_state.get("df_despesas"))
+        if not df_d_view.empty:
+            st.dataframe(df_d_view, use_container_width=True)
         else:
             st.info("Nenhuma despesa lançada ainda.")
 
@@ -366,12 +443,8 @@ def lancamentos_page():
 
             usa_cotacao = tipo in ["Criptomoeda", "Ação", "FII"]
 
-            if usa_cotacao:
-                st.caption(
-                    "Será usada a última cotação para calcular o valor em R$."
-                )
-                valor_manual = None
-            else:
+            valor_manual = None
+            if not usa_cotacao:
                 valor_manual = st.number_input(
                     "Valor total (R$)",
                     min_value=0.0,
@@ -388,6 +461,9 @@ def lancamentos_page():
                 elif qtd <= 0:
                     st.error("Quantidade deve ser maior que zero.")
                 else:
+                    preco = 0.0
+                    valor_total = 0.0
+
                     if usa_cotacao:
                         preco = get_asset_price_brl(tipo, ativo)
                         if preco is None:
@@ -398,12 +474,15 @@ def lancamentos_page():
                         else:
                             valor_total = preco * qtd
                     else:
-                        preco = (
-                            valor_manual / qtd if qtd > 0 and valor_manual else 0.0
-                        )
-                        valor_total = float(valor_manual) if valor_manual else 0.0
+                        if valor_manual is None or valor_manual <= 0:
+                            st.error("Informe o valor total em R$.")
+                        else:
+                            valor_total = float(valor_manual)
+                            preco = valor_total / qtd if qtd > 0 else 0.0
 
-                    if (usa_cotacao and preco is not None) or (not usa_cotacao and valor_manual is not None):
+                    if (usa_cotacao and preco is not None) or (
+                        not usa_cotacao and valor_manual is not None and valor_manual > 0
+                    ):
                         nova_linha = {
                             "Data": str(data_pat),
                             "Tipo": tipo,
@@ -413,13 +492,11 @@ def lancamentos_page():
                             "Valor_Total_R$": float(valor_total),
                         }
 
-                        st.session_state["df_patrimonio"] = pd.concat(
-                            [
-                                st.session_state["df_patrimonio"],
-                                pd.DataFrame([nova_linha]),
-                            ],
-                            ignore_index=True,
-                        )
+                        df_p = st.session_state.get("df_patrimonio", pd.DataFrame())
+                        df_p = normalize_df_patrimonio(df_p)
+                        df_p = pd.concat([df_p, pd.DataFrame([nova_linha])], ignore_index=True)
+
+                        st.session_state["df_patrimonio"] = df_p
 
                         if "user_email" in st.session_state:
                             save_user_data(st.session_state["user_email"])
@@ -428,8 +505,9 @@ def lancamentos_page():
                         st.rerun()
 
         st.markdown("### Patrimônio lançado")
-        if not st.session_state["df_patrimonio"].empty:
-            st.dataframe(st.session_state["df_patrimonio"], use_container_width=True)
+        df_p_view = normalize_df_patrimonio(st.session_state.get("df_patrimonio"))
+        if not df_p_view.empty:
+            st.dataframe(df_p_view, use_container_width=True)
         else:
             st.info("Nenhum lançamento de patrimônio ainda.")
 
@@ -443,9 +521,13 @@ def dashboard_page():
 
     init_empty_user_frames()
 
-    df_r = parse_date_column(st.session_state["df_receitas"])
-    df_d = parse_date_column(st.session_state["df_despesas"])
-    df_p = parse_date_column(st.session_state["df_patrimonio"])
+    df_r = normalize_df_receitas_despesas(st.session_state.get("df_receitas"))
+    df_d = normalize_df_receitas_despesas(st.session_state.get("df_despesas"))
+    df_p = normalize_df_patrimonio(st.session_state.get("df_patrimonio"))
+
+    df_r = parse_date_column(df_r)
+    df_d = parse_date_column(df_d)
+    df_p = parse_date_column(df_p)
 
     # ------------------------------
     # FILTRO DE MÊS / ANO
@@ -454,9 +536,9 @@ def dashboard_page():
 
     datas = []
     if not df_r.empty:
-        datas.extend(df_r["Data"].tolist())
+        datas.extend(df_r["Data"].dropna().tolist())
     if not df_d.empty:
-        datas.extend(df_d["Data"].tolist())
+        datas.extend(df_d["Data"].dropna().tolist())
 
     if datas:
         min_data = min(datas)
@@ -482,7 +564,6 @@ def dashboard_page():
 
     st.subheader("Receitas x Despesas do mês")
 
-    # Filtrar por ano/mês
     def filtra_mes(df):
         if df.empty:
             return df
@@ -506,11 +587,17 @@ def dashboard_page():
     # Lançamentos do mês (linha a linha)
     st.markdown("#### Lançamentos do mês (linha a linha)")
 
-    df_r_mes_view = df_r_mes[["Data", "Categoria", "Descrição", "Valor"]].copy()
-    df_r_mes_view["Tipo"] = "Receita"
+    if not df_r_mes.empty:
+        df_r_mes_view = df_r_mes[["Data", "Categoria", "Descrição", "Valor"]].copy()
+        df_r_mes_view["Tipo"] = "Receita"
+    else:
+        df_r_mes_view = pd.DataFrame(columns=["Data", "Categoria", "Descrição", "Valor", "Tipo"])
 
-    df_d_mes_view = df_d_mes[["Data", "Categoria", "Descrição", "Valor"]].copy()
-    df_d_mes_view["Tipo"] = "Despesa"
+    if not df_d_mes.empty:
+        df_d_mes_view = df_d_mes[["Data", "Categoria", "Descrição", "Valor"]].copy()
+        df_d_mes_view["Tipo"] = "Despesa"
+    else:
+        df_d_mes_view = pd.DataFrame(columns=["Data", "Categoria", "Descrição", "Valor", "Tipo"])
 
     df_ld = pd.concat([df_r_mes_view, df_d_mes_view], ignore_index=True) if not (
         df_r_mes_view.empty and df_d_mes_view.empty
@@ -520,7 +607,6 @@ def dashboard_page():
         df_ld = df_ld.sort_values("Data")
         st.dataframe(df_ld, use_container_width=True)
 
-        # Balanço acumulado no mês, lançamento a lançamento
         df_ld_plot = df_ld.copy()
         df_ld_plot["Data"] = df_ld_plot["Data"].dt.strftime("%Y-%m-%d")
         df_ld_plot["Valor_signed"] = df_ld_plot.apply(
@@ -576,7 +662,6 @@ def main():
         st.sidebar.markdown(f"**Usuário:** {email}")
 
         if st.sidebar.button("Logout"):
-            # Salva tudo antes de sair
             if "user_email" in st.session_state:
                 save_user_data(st.session_state["user_email"])
 
