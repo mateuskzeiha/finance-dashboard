@@ -1,652 +1,313 @@
-import streamlit as st
-import pandas as pd
-import requests
-from datetime import datetime, timedelta
-from pathlib import Path
-import hashlib
+import os
+import json
 import random
 import smtplib
-import ssl
-from email.message import EmailMessage
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
-# ==========================
-# CONFIG BÁSICA
-# ==========================
+import pandas as pd
+import streamlit as st
 
-st.set_page_config(
-    page_title="Dashboard Financeiro Pessoal",
-    page_icon="💰",
-    layout="wide"
-)
+# ==============================
+# CONFIGURAÇÕES GERAIS
+# ==============================
 
-DATA_ROOT = Path("financas_data")
-DATA_ROOT.mkdir(parents=True, exist_ok=True)
+st.set_page_config(page_title="Dashboard Financeiro", layout="wide")
 
-USERS_FILE = DATA_ROOT / "users.csv"
-
-COINGECKO_API_URL = "https://api.coingecko.com/api/v3/simple/price"
-BRAPI_URL = "https://brapi.dev/api/quote"
+DATA_FILE = "user_data.json"
 
 
-# ==========================
-# FUNÇÕES AUXILIARES – USERS
-# ==========================
+# ==============================
+# FUNÇÕES DE PERSISTÊNCIA
+# ==============================
 
-def load_users_df() -> pd.DataFrame:
-    if USERS_FILE.exists():
-        return pd.read_csv(USERS_FILE)
+def load_all_data():
+    """Carrega o JSON completo com os dados de todos os usuários."""
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return {}
+    return {}
+
+
+def save_all_data(data: dict):
+    """Salva o dicionário completo de usuários no JSON."""
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def init_empty_user_frames():
+    """Cria dataframes vazios padrão para receitas e despesas."""
+    if "df_receitas" not in st.session_state:
+        st.session_state["df_receitas"] = pd.DataFrame(
+            columns=["Data", "Categoria", "Descrição", "Valor"]
+        )
+    if "df_despesas" not in st.session_state:
+        st.session_state["df_despesas"] = pd.DataFrame(
+            columns=["Data", "Categoria", "Descrição", "Valor"]
+        )
+
+
+def load_user_data(email: str):
+    """Carrega os dados do usuário pelo e-mail e joga no session_state."""
+    data_all = load_all_data()
+    user_data = data_all.get(email)
+
+    if user_data:
+        st.session_state["df_receitas"] = pd.DataFrame(user_data.get("receitas", []))
+        st.session_state["df_despesas"] = pd.DataFrame(user_data.get("despesas", []))
     else:
-        return pd.DataFrame(columns=["email", "name", "phone", "code_hash", "code_expiry"])
+        init_empty_user_frames()
 
 
-def save_users_df(df: pd.DataFrame):
-    df.to_csv(USERS_FILE, index=False)
+def save_user_data(email: str):
+    """Salva os dataframes atuais no JSON, usando o e-mail como chave."""
+    data_all = load_all_data()
+
+    data_all[email] = {
+        "receitas": st.session_state["df_receitas"].to_dict(orient="records"),
+        "despesas": st.session_state["df_despesas"].to_dict(orient="records"),
+    }
+
+    save_all_data(data_all)
 
 
-def hash_code(code: str) -> str:
-    return hashlib.sha256(code.encode()).hexdigest()
+# ==============================
+# FUNÇÃO PARA ENVIAR CÓDIGO POR E-MAIL (ICLOUD)
+# ==============================
 
-
-def sanitize_email_for_folder(email: str) -> str:
-    # transforma email em algo seguro para nome de pasta
-    return email.replace("@", "_at_").replace(".", "_dot_")
-
-
-# ==========================
-# ENVIO DE EMAIL – CÓDIGO DE LOGIN
-# ==========================
-
-def send_login_code_email(email_to: str, code: str):
+def send_email_code(email_to: str, code: str):
     """
-    Envia o código de login por e-mail usando as credenciais em st.secrets["email"].
-    NÃO mostra o código na tela.
+    Envia o código de login usando SMTP do iCloud.
+    Atenção: use e-mail @icloud.com / @me.com + senha de app.
     """
-    try:
-        cfg = st.secrets["email"]
-    except Exception:
-        st.error("Configuração de e-mail não encontrada em st.secrets['email'].")
-        st.stop()
 
-    smtp_server = cfg.get("smtp_server")
-    smtp_port = int(cfg.get("smtp_port", 587))
-    smtp_user = cfg.get("smtp_user")
-    smtp_password = cfg.get("smtp_password")
-    from_name = cfg.get("from_name", "Dashboard Financeiro")
+    # ===== AJUSTE AQUI COM SEUS DADOS =====
+    smtp_server = "smtp.mail.me.com"
+    smtp_port = 587  # TLS
+    smtp_user = "SEU_EMAIL@icloud.com"  # seu e-mail iCloud
+    smtp_password = "SENHA_DE_APP_ICLOUD"  # senha de app gerada na Apple
+    # ======================================
 
-    subject = "Seu código de acesso – Dashboard Financeiro"
-    body = f"""
-Olá,
+    subject = "Seu código de login - Dashboard Financeiro"
+    body = f"Seu código de acesso é: {code}"
 
-Seu código de acesso é:
-
-    {code}
-
-Ele expira em 10 minutos.
-
-Se você não solicitou este código, pode ignorar este e-mail.
-
-Atenciosamente,
-{from_name}
-"""
-
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = f"{from_name} <{smtp_user}>"
+    msg = MIMEMultipart()
+    msg["From"] = smtp_user
     msg["To"] = email_to
-    msg.set_content(body)
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain", "utf-8"))
 
-    context = ssl.create_default_context()
     try:
         with smtplib.SMTP(smtp_server, smtp_port) as server:
-            server.starttls(context=context)
+            server.starttls()
             server.login(smtp_user, smtp_password)
             server.send_message(msg)
+        return True, None
     except Exception as e:
-        st.error(f"Não foi possível enviar o código por e-mail. Detalhe técnico: {e}")
-        st.stop()
+        return False, str(e)
 
 
-# ==========================
-# LOGIN POR CÓDIGO
-# ==========================
+# ==============================
+# TELA DE LOGIN
+# ==============================
 
-def start_login_flow():
-    st.title("🔐 Acesso – Dashboard Financeiro")
+def login_page():
+    st.title("Login - Dashboard Financeiro")
 
-    df_users = load_users_df()
+    if "login_step" not in st.session_state:
+        st.session_state["login_step"] = "email"  # email ou code
 
-    # 1ª etapa: pedir nome + e-mail
-    if "pending_email" not in st.session_state:
-        st.subheader("Informe seus dados para receber o código de acesso")
+    if st.session_state["login_step"] == "email":
+        email = st.text_input("Digite seu e-mail:")
 
-        with st.form("request_code_form"):
-            name = st.text_input("Nome")
-            email = st.text_input("E-mail")
-            phone = st.text_input("Telefone (opcional)")
-            submitted = st.form_submit_button("Enviar código por e-mail")
-
-        if submitted:
-            if not email or not name:
-                st.warning("Nome e e-mail são obrigatórios.")
-                return
-
-            # Gera código de 6 dígitos
-            code = f"{random.randint(100000, 999999)}"
-            code_hash = hash_code(code)
-            expiry = datetime.utcnow() + timedelta(minutes=10)
-
-            # Atualiza ou cria usuário
-            if df_users.empty:
-                df_users = pd.DataFrame([{
-                    "email": email,
-                    "name": name,
-                    "phone": phone,
-                    "code_hash": code_hash,
-                    "code_expiry": expiry.isoformat()
-                }])
+        if st.button("Enviar código de acesso"):
+            if not email:
+                st.error("Informe um e-mail.")
             else:
-                mask = df_users["email"] == email
-                if mask.any():
-                    df_users.loc[mask, ["name", "phone", "code_hash", "code_expiry"]] = [
-                        name, phone, code_hash, expiry.isoformat()
-                    ]
+                code = str(random.randint(100000, 999999))
+                st.session_state["login_code"] = code
+                st.session_state["temp_email"] = email
+
+                ok, err = send_email_code(email, code)
+
+                if ok:
+                    st.success("Código enviado para seu e-mail.")
+                    st.session_state["login_step"] = "code"
+                    st.rerun()
                 else:
-                    df_users = pd.concat([
-                        df_users,
-                        pd.DataFrame([{
-                            "email": email,
-                            "name": name,
-                            "phone": phone,
-                            "code_hash": code_hash,
-                            "code_expiry": expiry.isoformat()
-                        }])
-                    ], ignore_index=True)
-
-            save_users_df(df_users)
-
-            # Envia o código por e-mail (não mostra na tela)
-            send_login_code_email(email, code)
-
-            st.session_state["pending_email"] = email
-            st.success(f"Código enviado para {email}. Verifique sua caixa de entrada.")
-            st.rerun()
-
-    # 2ª etapa: digitar o código recebido por e-mail
-    else:
-        email = st.session_state["pending_email"]
-        st.subheader(f"Digite o código enviado para {email}")
-
-        with st.form("confirm_code_form"):
-            code_input = st.text_input("Código de 6 dígitos")
-            submitted_code = st.form_submit_button("Entrar")
-
-        if submitted_code:
-            df_users = load_users_df()
-            row = df_users[df_users["email"] == email]
-            if row.empty:
-                st.error("Usuário não encontrado. Volte e solicite o código novamente.")
-                return
-
-            stored_hash = row.iloc[0]["code_hash"]
-            expiry_str = row.iloc[0]["code_expiry"]
-            try:
-                expiry = datetime.fromisoformat(expiry_str)
-            except Exception:
-                expiry = datetime.utcnow() - timedelta(seconds=1)
-
-            if datetime.utcnow() > expiry:
-                st.warning("Código expirado. Solicite um novo código.")
-                del st.session_state["pending_email"]
-                return
-
-            if stored_hash != hash_code(code_input.strip()):
-                st.error("Código inválido.")
-                return
-
-            # Autenticação ok
-            st.session_state["auth"] = True
-            st.session_state["user_email"] = email
-            st.session_state["user_name"] = row.iloc[0]["name"]
-            if "pending_email" in st.session_state:
-                del st.session_state["pending_email"]
-            st.success("Login realizado com sucesso.")
-            st.rerun()
-
-        if st.button("Voltar e trocar e-mail"):
-            del st.session_state["pending_email"]
-            st.rerun()
-
-
-def require_login():
-    if not st.session_state.get("auth", False):
-        start_login_flow()
-        st.stop()
-
-
-def get_user_dir() -> Path:
-    email = st.session_state.get("user_email", "anon@local")
-    folder = sanitize_email_for_folder(email)
-    user_dir = DATA_ROOT / folder
-    user_dir.mkdir(parents=True, exist_ok=True)
-    return user_dir
-
-
-def get_tx_file() -> Path:
-    return get_user_dir() / "transactions.csv"
-
-
-def get_assets_file() -> Path:
-    return get_user_dir() / "assets.csv"
-
-
-# ==========================
-# FUNÇÕES DE DADOS
-# ==========================
-
-def load_transactions():
-    tx_file = get_tx_file()
-    if tx_file.exists():
-        df = pd.read_csv(tx_file)
-        df["date"] = pd.to_datetime(df["date"])
-        return df
-    else:
-        return pd.DataFrame(columns=["date", "type", "category", "description", "amount"])
-
-
-def save_transactions(df: pd.DataFrame):
-    tx_file = get_tx_file()
-    df.to_csv(tx_file, index=False)
-
-
-def load_assets():
-    assets_file = get_assets_file()
-    if assets_file.exists():
-        return pd.read_csv(assets_file)
-    else:
-        return pd.DataFrame(columns=[
-            "asset_type",
-            "category",
-            "name",
-            "symbol",
-            "api_source",
-            "api_id",
-            "quantity",
-            "manual_price_brl",
-        ])
-
-
-def save_assets(df: pd.DataFrame):
-    assets_file = get_assets_file()
-    df.to_csv(assets_file, index=False)
-
-
-def fetch_crypto_prices_br(api_ids):
-    if not api_ids:
-        return {}
-    params = {"ids": ",".join(api_ids), "vs_currencies": "brl"}
-    try:
-        resp = requests.get(COINGECKO_API_URL, params=params, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        return {k: v.get("brl", 0.0) for k, v in data.items()}
-    except Exception as e:
-        st.warning(f"Erro ao buscar preços na CoinGecko: {e}")
-        return {}
-
-
-def fetch_brapi_prices(symbols):
-    prices = {}
-    for sym in symbols:
-        try:
-            url = f"{BRAPI_URL}/{sym}"
-            params = {
-                "range": "1d",
-                "interval": "1d",
-                "fundamental": "false",
-                "dividends": "false",
-            }
-            resp = requests.get(url, params=params, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-            results = data.get("results", [])
-            if results:
-                prices[sym] = results[0].get("regularMarketPrice", 0.0)
-        except Exception as e:
-            st.warning(f"Erro ao buscar {sym} na Brapi: {e}")
-    return prices
-
-
-def compute_assets_values(df_assets: pd.DataFrame) -> pd.DataFrame:
-    if df_assets.empty:
-        df = df_assets.copy()
-        df["current_price_brl"] = 0.0
-        df["value_brl"] = 0.0
-        return df
-
-    df = df_assets.copy()
-    df["quantity"] = df["quantity"].fillna(0.0)
-    df["manual_price_brl"] = df["manual_price_brl"].fillna(0.0)
-    df["current_price_brl"] = 0.0
-
-    # Cripto (CoinGecko)
-    mask_crypto = df["api_source"] == "COINGECKO"
-    crypto_ids = df.loc[mask_crypto, "api_id"].dropna().unique().tolist()
-    crypto_prices = fetch_crypto_prices_br(crypto_ids)
-    if crypto_prices:
-        df.loc[mask_crypto, "current_price_brl"] = df.loc[mask_crypto, "api_id"].map(crypto_prices).fillna(0.0)
-
-    # Ações/FIIs (Brapi)
-    mask_brapi = df["api_source"] == "BRAPI"
-    symbols = df.loc[mask_brapi, "api_id"].dropna().unique().tolist()
-    stock_prices = fetch_brapi_prices(symbols)
-    if stock_prices:
-        df.loc[mask_brapi, "current_price_brl"] = df.loc[mask_brapi, "api_id"].map(stock_prices).fillna(0.0)
-
-    # Manual
-    mask_manual = df["api_source"] == "MANUAL"
-    df.loc[mask_manual, "current_price_brl"] = df.loc[mask_manual, "manual_price_brl"]
-
-    df["value_brl"] = df["current_price_brl"] * df["quantity"].clip(lower=0)
-
-    return df
-
-
-def compute_monthly_summary(df_tx: pd.DataFrame):
-    if df_tx.empty:
-        return pd.DataFrame()
-
-    df = df_tx.copy()
-    df["year_month"] = df["date"].dt.to_period("M").astype(str)
-
-    summary = df.groupby("year_month")["amount"].agg(total="sum").reset_index()
-
-    income = df[df["amount"] > 0].groupby("year_month")["amount"].sum()
-    expense = df[df["amount"] < 0].groupby("year_month")["amount"].sum()
-
-    summary["income"] = summary["year_month"].map(income).fillna(0.0)
-    summary["expense"] = summary["year_month"].map(expense).fillna(0.0).abs()
-    summary = summary.sort_values("year_month")
-    summary["cumulative_balance"] = summary["total"].cumsum()
-
-    return summary
-
-
-# ==========================
-# PÁGINAS
-# ==========================
-
-def page_dashboard():
-    st.header(f"📊 Dashboard financeiro – {st.session_state.get('user_name', '')}")
-
-    df_tx = load_transactions()
-    df_assets = load_assets()
-    df_assets_val = compute_assets_values(df_assets)
-
-    summary = compute_monthly_summary(df_tx)
-
-    cash_balance = summary["cumulative_balance"].iloc[-1] if not summary.empty else 0.0
-    total_assets = df_assets_val["value_brl"].sum() if not df_assets_val.empty else 0.0
-    net_worth = cash_balance + total_assets
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric(
-        "Saldo em caixa (receitas – despesas)",
-        f"R$ {cash_balance:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    )
-    col2.metric(
-        "Patrimônio (investimentos + bens)",
-        f"R$ {total_assets:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    )
-    col3.metric(
-        "Patrimônio líquido (caixa + patrimônio)",
-        f"R$ {net_worth:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    )
-
-    st.markdown("---")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("➕ Lançar receita / despesa", use_container_width=True):
-            st.session_state["current_page"] = "Lançamentos"
-            st.rerun()
-    with c2:
-        if st.button("🏦 Atualizar patrimônio / investimentos", use_container_width=True):
-            st.session_state["current_page"] = "Patrimônio / Investimentos"
-            st.rerun()
-
-    st.markdown("---")
-
-    col_left, col_right = st.columns([2, 1])
-
-    with col_left:
-        st.subheader("Evolução financeira (caixa x patrimônio líquido)")
-        if summary.empty:
-            st.info("Sem lançamentos ainda. Use a aba de lançamentos para começar.")
-        else:
-            networth_series = summary["cumulative_balance"] + total_assets
-            chart_df = pd.DataFrame({
-                "Saldo em caixa": summary["cumulative_balance"].values,
-                "Patrimônio líquido (caixa + patrimônio atual)": networth_series.values
-            }, index=summary["year_month"])
-            st.line_chart(chart_df)
-
-    with col_right:
-        st.subheader("Alocação do patrimônio por tipo")
-        if df_assets_val.empty or total_assets == 0:
-            st.info("Nenhum patrimônio cadastrado ainda.")
-        else:
-            alloc = df_assets_val.groupby("asset_type")["value_brl"].sum()
-            st.bar_chart(alloc)
-
-
-def page_lancamentos():
-    st.header("📒 Lançar receitas e despesas")
-
-    df = load_transactions()
-
-    with st.form("form_lancamento"):
-        col1, col2 = st.columns(2)
-        with col1:
-            date = st.date_input("Data", value=datetime.today())
-            tx_type = st.selectbox("Tipo", ["Receita", "Despesa"])
-            category = st.text_input("Categoria", placeholder="Salário, Mercado, Aluguel...")
-        with col2:
-            description = st.text_input("Descrição", placeholder="Texto livre...")
-            amount = st.number_input("Valor (R$)", min_value=0.0, step=10.0, format="%.2f")
-
-        submitted = st.form_submit_button("Registrar lançamento")
-
-    if submitted:
-        if amount <= 0:
-            st.warning("Valor deve ser maior que zero.")
-        else:
-            amount_signed = amount if tx_type == "Receita" else -amount
-            new_row = {
-                "date": pd.to_datetime(date),
-                "type": "income" if tx_type == "Receita" else "expense",
-                "category": category,
-                "description": description,
-                "amount": amount_signed,
-            }
-            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-            save_transactions(df)
-            st.success("Lançamento registrado.")
-
-    st.subheader("Lançamentos recentes")
-    if df.empty:
-        st.info("Ainda não há lançamentos.")
-    else:
-        df_sorted = df.sort_values("date", ascending=False)
-        df_sorted["date_br"] = df_sorted["date"].dt.strftime("%d/%m/%Y")
-        st.dataframe(
-            df_sorted[["date_br", "type", "category", "description", "amount"]].rename(columns={
-                "date_br": "Data",
-                "type": "Tipo",
-                "category": "Categoria",
-                "description": "Descrição",
-                "amount": "Valor (R$)",
-            }),
-            use_container_width=True
-        )
-
-
-def page_patrimonio():
-    st.header("🏦 Patrimônio e investimentos")
-
-    df_assets = load_assets()
-
-    st.subheader("Cadastrar / atualizar patrimônio")
-
-    asset_types = ["Cripto", "Ação", "FII", "Imóvel", "Carro", "Colecionável", "Outro"]
-
-    with st.form("form_asset"):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            asset_type = st.selectbox("Tipo de ativo", asset_types)
-            category = st.text_input("Categoria (opcional)", placeholder="Ex.: Bolsa BR, Exterior, Patrimônio pessoal...")
-        with col2:
-            name = st.text_input("Nome do ativo", placeholder="Ex.: Bitcoin, PETR4, Casa Praia")
-            symbol = st.text_input("Símbolo / Ticker", placeholder="BTC, PETR4, HGLG11...")
-        with col3:
-            quantity = st.number_input("Quantidade", min_value=0.0, step=1.0, format="%.4f")
-
-        manual_price = st.number_input(
-            "Preço unitário manual (R$) – use para bens sem cotação automática",
-            min_value=0.0,
-            step=100.0,
-            format="%.2f"
-        )
-
-        submitted = st.form_submit_button("Salvar patrimônio / investimento")
-
-    if submitted:
-        if not name:
-            st.warning("Informe ao menos o nome do ativo.")
-        else:
-            if asset_type == "Cripto":
-                api_source = "COINGECKO"
-                api_id_val = symbol.lower()
-            elif asset_type in ["Ação", "FII"]:
-                api_source = "BRAPI"
-                api_id_val = symbol.upper()
+                    st.error(f"Não foi possível enviar o código. Tente novamente mais tarde.")
+                    # Se quiser debugar local, pode exibir o erro:
+                    # st.info(f"Erro técnico: {err}")
+                    # E até o código (modo teste):
+                    # st.info(f"(Teste) Código gerado: {code}")
+
+    elif st.session_state["login_step"] == "code":
+        st.write(f"E-mail: **{st.session_state.get('temp_email', '')}**")
+        code_input = st.text_input("Digite o código recebido:", type="password")
+        if st.button("Entrar"):
+            code_real = st.session_state.get("login_code")
+
+            if code_input == code_real and code_real is not None:
+                email = st.session_state.get("temp_email")
+                st.session_state["authenticated"] = True
+                st.session_state["user_email"] = email
+
+                # Limpa dados temporários do login
+                st.session_state["login_code"] = None
+                st.session_state["login_step"] = "email"
+                st.session_state["temp_email"] = None
+
+                # Carrega dados do usuário
+                load_user_data(email)
+
+                st.success("Login realizado com sucesso!")
+                st.rerun()
             else:
-                api_source = "MANUAL"
-                api_id_val = ""
+                st.error("Código incorreto. Tente novamente.")
 
-            if asset_type in ["Imóvel", "Carro", "Colecionável", "Outro"] and manual_price <= 0:
-                st.warning("Para bens sem cotação automática, informe um preço manual.")
-            else:
-                new_row = {
-                    "asset_type": asset_type,
-                    "category": category,
-                    "name": name,
-                    "symbol": symbol,
-                    "api_source": api_source,
-                    "api_id": api_id_val,
-                    "quantity": quantity if quantity > 0 else 1.0,
-                    "manual_price_brl": manual_price,
-                }
+        if st.button("Voltar"):
+            st.session_state["login_step"] = "email"
+            st.session_state["login_code"] = None
+            st.session_state["temp_email"] = None
+            st.rerun()
 
-                if df_assets.empty:
-                    df_assets = pd.DataFrame([new_row])
-                else:
-                    mask = (
-                        (df_assets["asset_type"] == asset_type) &
-                        (df_assets["name"] == name) &
-                        (df_assets["symbol"] == symbol)
-                    )
-                    if mask.any():
-                        df_assets.loc[mask, :] = new_row
-                    else:
-                        df_assets = pd.concat([df_assets, pd.DataFrame([new_row])], ignore_index=True)
 
-                save_assets(df_assets)
-                st.success("Patrimônio/investimento salvo/atualizado.")
-                df_assets = load_assets()
+# ==============================
+# DASHBOARD LOGADO
+# ==============================
 
-    st.subheader("Visão do patrimônio")
+def dashboard_page():
+    st.title("Dashboard Financeiro")
 
-    df_assets = load_assets()
-    df_assets_val = compute_assets_values(df_assets)
+    email = st.session_state.get("user_email", "Desconhecido")
+    st.sidebar.markdown(f"**Usuário:** {email}")
 
-    if df_assets_val.empty:
-        st.info("Nenhum patrimônio cadastrado ainda.")
-        return
+    # Botão de logout
+    if st.sidebar.button("Logout"):
+        # Garante que tudo esteja salvo
+        if "user_email" in st.session_state:
+            save_user_data(st.session_state["user_email"])
 
-    total_assets = df_assets_val["value_brl"].sum()
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
 
-    col1, col2 = st.columns([2, 1])
+        st.rerun()
+
+    # Garante que dataframes existam
+    init_empty_user_frames()
+
+    col1, col2 = st.columns(2)
+
+    # FORM RECEITAS
     with col1:
-        df_show = df_assets_val.copy()
-        df_show["value_brl_fmt"] = df_show["value_brl"].apply(
-            lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        )
-        df_show["current_price_brl_fmt"] = df_show["current_price_brl"].apply(
-            lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        )
+        st.subheader("Cadastrar Receita")
+        with st.form("form_receitas"):
+            data_rec = st.date_input("Data da receita")
+            cat_rec = st.text_input("Categoria da receita", value="Salário")
+            desc_rec = st.text_input("Descrição da receita")
+            valor_rec = st.number_input("Valor da receita", min_value=0.0, step=0.01)
 
-        st.dataframe(
-            df_show[[
-                "asset_type", "category", "name", "symbol",
-                "quantity", "current_price_brl_fmt", "value_brl_fmt"
-            ]].rename(columns={
-                "asset_type": "Tipo",
-                "category": "Categoria",
-                "name": "Nome",
-                "symbol": "Símbolo",
-                "quantity": "Qtd",
-                "current_price_brl_fmt": "Preço atual (R$)",
-                "value_brl_fmt": "Valor total (R$)",
-            }),
-            use_container_width=True
-        )
+            submitted_rec = st.form_submit_button("Adicionar receita")
 
+            if submitted_rec:
+                nova_linha = {
+                    "Data": str(data_rec),
+                    "Categoria": cat_rec,
+                    "Descrição": desc_rec,
+                    "Valor": float(valor_rec),
+                }
+                st.session_state["df_receitas"] = pd.concat(
+                    [
+                        st.session_state["df_receitas"],
+                        pd.DataFrame([nova_linha]),
+                    ],
+                    ignore_index=True,
+                )
+
+                if "user_email" in st.session_state:
+                    save_user_data(st.session_state["user_email"])
+
+                st.success("Receita adicionada com sucesso!")
+                st.rerun()
+
+    # FORM DESPESAS
     with col2:
-        st.metric(
-            "Valor total do patrimônio",
-            f"R$ {total_assets:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        )
+        st.subheader("Cadastrar Despesa")
+        with st.form("form_despesas"):
+            data_desp = st.date_input("Data da despesa")
+            cat_desp = st.text_input("Categoria da despesa", value="Alimentação")
+            desc_desp = st.text_input("Descrição da despesa")
+            valor_desp = st.number_input("Valor da despesa", min_value=0.0, step=0.01)
 
-    st.subheader("Patrimônio por tipo de ativo (R$)")
-    alloc = df_assets_val.groupby("asset_type")["value_brl"].sum()
-    st.bar_chart(alloc)
+            submitted_desp = st.form_submit_button("Adicionar despesa")
+
+            if submitted_desp:
+                nova_linha = {
+                    "Data": str(data_desp),
+                    "Categoria": cat_desp,
+                    "Descrição": desc_desp,
+                    "Valor": float(valor_desp),
+                }
+                st.session_state["df_despesas"] = pd.concat(
+                    [
+                        st.session_state["df_despesas"],
+                        pd.DataFrame([nova_linha]),
+                    ],
+                    ignore_index=True,
+                )
+
+                if "user_email" in st.session_state:
+                    save_user_data(st.session_state["user_email"])
+
+                st.success("Despesa adicionada com sucesso!")
+                st.rerun()
+
+    st.markdown("---")
+
+    # Tabelas
+    col3, col4 = st.columns(2)
+
+    with col3:
+        st.subheader("Receitas")
+        if not st.session_state["df_receitas"].empty:
+            st.dataframe(st.session_state["df_receitas"], use_container_width=True)
+        else:
+            st.info("Nenhuma receita cadastrada ainda.")
+
+    with col4:
+        st.subheader("Despesas")
+        if not st.session_state["df_despesas"].empty:
+            st.dataframe(st.session_state["df_despesas"], use_container_width=True)
+        else:
+            st.info("Nenhuma despesa cadastrada ainda.")
+
+    # Resumo simples
+    total_receitas = st.session_state["df_receitas"]["Valor"].sum()
+    total_despesas = st.session_state["df_despesas"]["Valor"].sum()
+    saldo = total_receitas - total_despesas
+
+    st.markdown("---")
+    st.subheader("Resumo")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total de Receitas", f"R$ {total_receitas:,.2f}")
+    c2.metric("Total de Despesas", f"R$ {total_despesas:,.2f}")
+    c3.metric("Saldo", f"R$ {saldo:,.2f}")
 
 
-# ==========================
-# LAYOUT PRINCIPAL
-# ==========================
+# ==============================
+# MAIN
+# ==============================
 
 def main():
-    require_login()
+    authenticated = st.session_state.get("authenticated", False)
 
-    if "current_page" not in st.session_state:
-        st.session_state["current_page"] = "Dashboard"
-
-    pages = ["Dashboard", "Lançamentos", "Patrimônio / Investimentos"]
-
-    with st.sidebar:
-        st.title("💰 Finanças Pessoais")
-        st.caption(f"{st.session_state.get('user_name', '')}\n{st.session_state.get('user_email', '')}")
-
-        selected = st.radio(
-            "Navegação",
-            pages,
-            index=pages.index(st.session_state["current_page"])
-        )
-
-        st.markdown("---")
-        if st.button("Sair (logout)"):
-            st.session_state.clear()
-            st.rerun()
-
-    st.session_state["current_page"] = selected
-
-    if selected == "Dashboard":
-        page_dashboard()
-    elif selected == "Lançamentos":
-        page_lancamentos()
-    elif selected == "Patrimônio / Investimentos":
-        page_patrimonio()
+    if not authenticated:
+        login_page()
+    else:
+        dashboard_page()
 
 
 if __name__ == "__main__":
