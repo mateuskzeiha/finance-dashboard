@@ -8,11 +8,7 @@ from datetime import datetime
 
 import pandas as pd
 import streamlit as st
-try:
-    import yfinance as yf
-except ModuleNotFoundError:
-    yf = None
-
+import yfinance as yf
 
 # ==============================
 # CONFIGURAÇÕES GERAIS
@@ -190,8 +186,8 @@ def send_email_code(email_to: str, code: str):
     # ===== AJUSTE AQUI COM SEUS DADOS =====
     smtp_server = "smtp.mail.me.com"
     smtp_port = 587  # TLS
-    smtp_user = "SEU_EMAIL@icloud.com"         # seu e-mail iCloud
-    smtp_password = "SENHA_DE_APP_ICLOUD"      # senha de app gerada na Apple
+    smtp_user = "mateuskr@icloud.com"         # seu e-mail iCloud
+    smtp_password = "dklx-aojq-fond-tjfn"      # senha de app gerada na Apple
     # ======================================
 
     subject = "Seu código de login - Dashboard Financeiro"
@@ -216,6 +212,7 @@ def send_email_code(email_to: str, code: str):
 # ==============================
 # FUNÇÕES DE COTAÇÃO / DATA
 # ==============================
+
 def get_asset_price_brl(asset_type: str, ticker: str):
     """
     Busca o preço em R$ usando yfinance.
@@ -469,7 +466,6 @@ def lancamentos_page():
 
                     if usa_cotacao:
                         preco = get_asset_price_brl(tipo, ativo)
-                        if yf is None: return None
                         if preco is None:
                             st.error(
                                 "Não foi possível obter a cotação. "
