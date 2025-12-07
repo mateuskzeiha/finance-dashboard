@@ -8,7 +8,11 @@ from datetime import datetime
 
 import pandas as pd
 import streamlit as st
-import yfinance as yf
+try:
+    import yfinance as yf
+except ModuleNotFoundError:
+    yf = None
+
 
 # ==============================
 # CONFIGURAÇÕES GERAIS
@@ -212,7 +216,6 @@ def send_email_code(email_to: str, code: str):
 # ==============================
 # FUNÇÕES DE COTAÇÃO / DATA
 # ==============================
-
 def get_asset_price_brl(asset_type: str, ticker: str):
     """
     Busca o preço em R$ usando yfinance.
@@ -466,6 +469,7 @@ def lancamentos_page():
 
                     if usa_cotacao:
                         preco = get_asset_price_brl(tipo, ativo)
+                        if yf is None: return None
                         if preco is None:
                             st.error(
                                 "Não foi possível obter a cotação. "
