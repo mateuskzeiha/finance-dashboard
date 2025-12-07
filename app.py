@@ -245,9 +245,7 @@ def yahoo_last_close(symbol: str):
         )
         req = urllib.request.Request(
             url,
-            headers={
-                "User-Agent": "Mozilla/5.0"
-            },
+            headers={"User-Agent": "Mozilla/5.0"},
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -282,16 +280,13 @@ def get_asset_price_brl(asset_type: str, ticker: str):
 
     try:
         if asset_type == "Ação":
-            # Se estiver na lista, usa o mapeamento
             if ticker in ACAO_TICKERS:
                 symbol = ACAO_TICKERS[ticker]
             else:
                 symbol = ticker
                 if not symbol.endswith(".SA"):
                     symbol += ".SA"
-
-            price_brl = yahoo_last_close(symbol)
-            return price_brl
+            return yahoo_last_close(symbol)
 
         elif asset_type == "FII":
             if ticker in FII_TICKERS:
@@ -300,9 +295,7 @@ def get_asset_price_brl(asset_type: str, ticker: str):
                 symbol = ticker
                 if not symbol.endswith(".SA"):
                     symbol += ".SA"
-
-            price_brl = yahoo_last_close(symbol)
-            return price_brl
+            return yahoo_last_close(symbol)
 
         elif asset_type == "Criptomoeda":
             if ticker in CRYPTO_TICKERS:
@@ -394,7 +387,7 @@ def login_page():
 
 
 # ==============================
-# PÁGINA DE LANÇAMENTOS
+# PÁGINA DE LANÇAMENTOS (com edição)
 # ==============================
 
 def lancamentos_page():
@@ -427,8 +420,9 @@ def lancamentos_page():
                     "Valor": float(valor_rec),
                 }
 
-                df_r = st.session_state.get("df_receitas", pd.DataFrame())
-                df_r = normalize_df_receitas_despesas(df_r)
+                df_r = normalize_df_receitas_despesas(
+                    st.session_state.get("df_receitas", pd.DataFrame())
+                )
                 df_r = pd.concat([df_r, pd.DataFrame([nova_linha])], ignore_index=True)
 
                 st.session_state["df_receitas"] = df_r
@@ -439,12 +433,21 @@ def lancamentos_page():
                 st.success("Receita adicionada.")
                 st.rerun()
 
-        st.markdown("### Receitas lançadas")
+        st.markdown("### Receitas lançadas (clique para editar ou excluir)")
         df_r_view = normalize_df_receitas_despesas(st.session_state.get("df_receitas"))
-        if not df_r_view.empty:
-            st.dataframe(df_r_view, use_container_width=True)
-        else:
-            st.info("Nenhuma receita lançada ainda.")
+        edited_r = st.data_editor(
+            df_r_view,
+            num_rows="dynamic",
+            key="editor_receitas",
+            use_container_width=True,
+        )
+        edited_r = normalize_df_receitas_despesas(edited_r)
+
+        if not edited_r.reset_index(drop=True).equals(df_r_view.reset_index(drop=True)):
+            st.session_state["df_receitas"] = edited_r
+            if "user_email" in st.session_state:
+                save_user_data(st.session_state["user_email"])
+            st.success("Receitas atualizadas.")
 
     # ========== DESPESA ==========
     with tab_despesa:
@@ -467,8 +470,9 @@ def lancamentos_page():
                     "Valor": float(valor_desp),
                 }
 
-                df_d = st.session_state.get("df_despesas", pd.DataFrame())
-                df_d = normalize_df_receitas_despesas(df_d)
+                df_d = normalize_df_receitas_despesas(
+                    st.session_state.get("df_despesas", pd.DataFrame())
+                )
                 df_d = pd.concat([df_d, pd.DataFrame([nova_linha])], ignore_index=True)
 
                 st.session_state["df_despesas"] = df_d
@@ -479,12 +483,21 @@ def lancamentos_page():
                 st.success("Despesa adicionada.")
                 st.rerun()
 
-        st.markdown("### Despesas lançadas")
+        st.markdown("### Despesas lançadas (clique para editar ou excluir)")
         df_d_view = normalize_df_receitas_despesas(st.session_state.get("df_despesas"))
-        if not df_d_view.empty:
-            st.dataframe(df_d_view, use_container_width=True)
-        else:
-            st.info("Nenhuma despesa lançada ainda.")
+        edited_d = st.data_editor(
+            df_d_view,
+            num_rows="dynamic",
+            key="editor_despesas",
+            use_container_width=True,
+        )
+        edited_d = normalize_df_receitas_despesas(edited_d)
+
+        if not edited_d.reset_index(drop=True).equals(df_d_view.reset_index(drop=True)):
+            st.session_state["df_despesas"] = edited_d
+            if "user_email" in st.session_state:
+                save_user_data(st.session_state["user_email"])
+            st.success("Despesas atualizadas.")
 
     # ========== PATRIMÔNIO ==========
     with tab_patrimonio:
@@ -499,7 +512,7 @@ def lancamentos_page():
 
             ativo = ""
             ativo_label = ""
-            # Segmenta as listas
+
             if tipo == "Criptomoeda":
                 opcoes = list(CRYPTO_TICKERS.keys()) + ["Outro"]
                 escolha = st.selectbox("Cripto", opcoes)
@@ -587,8 +600,9 @@ def lancamentos_page():
                             "Valor_Total_R$": float(valor_total),
                         }
 
-                        df_p = st.session_state.get("df_patrimonio", pd.DataFrame())
-                        df_p = normalize_df_patrimonio(df_p)
+                        df_p = normalize_df_patrimonio(
+                            st.session_state.get("df_patrimonio", pd.DataFrame())
+                        )
                         df_p = pd.concat([df_p, pd.DataFrame([nova_linha])], ignore_index=True)
 
                         st.session_state["df_patrimonio"] = df_p
@@ -599,12 +613,21 @@ def lancamentos_page():
                         st.success("Patrimônio adicionado.")
                         st.rerun()
 
-        st.markdown("### Patrimônio lançado")
+        st.markdown("### Patrimônio lançado (clique para editar ou excluir)")
         df_p_view = normalize_df_patrimonio(st.session_state.get("df_patrimonio"))
-        if not df_p_view.empty:
-            st.dataframe(df_p_view, use_container_width=True)
-        else:
-            st.info("Nenhum lançamento de patrimônio ainda.")
+        edited_p = st.data_editor(
+            df_p_view,
+            num_rows="dynamic",
+            key="editor_patrimonio",
+            use_container_width=True,
+        )
+        edited_p = normalize_df_patrimonio(edited_p)
+
+        if not edited_p.reset_index(drop=True).equals(df_p_view.reset_index(drop=True)):
+            st.session_state["df_patrimonio"] = edited_p
+            if "user_email" in st.session_state:
+                save_user_data(st.session_state["user_email"])
+            st.success("Patrimônio atualizado.")
 
 
 # ==============================
