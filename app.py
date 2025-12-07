@@ -15,46 +15,118 @@ st.set_page_config(
     layout="wide"
 )
 
-DATA_ROOT = Path("financas_data")  # raiz, depois criamos subpastas por usuário
+DATA_ROOT = Path("financas_data")  # raiz
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
 
 COINGECKO_API_URL = "https://api.coingecko.com/api/v3/simple/price"
 BRAPI_URL = "https://brapi.dev/api/quote"
 
+USERS_FILE = DATA_ROOT / "users.csv"
+
 
 # ==========================
-# LOGIN / USUÁRIOS
+# GESTÃO DE USUÁRIOS (CADASTRO + LOGIN)
 # ==========================
 
-# Usuários "hardcoded" só pra perfil. NÃO use senha real aqui.
-# Você pode adicionar outros depois.
-# Exemplo: "empresa": "sha256(5678)"
-USERS = {
-    "mateus": hashlib.sha256("1234".encode()).hexdigest(),
-}
+def load_users_df() -> pd.DataFrame:
+    if USERS_FILE.exists():
+        return pd.read_csv(USERS_FILE)
+    else:
+        return pd.DataFrame(columns=["username", "email", "phone", "password_hash"])
+
+
+def save_users_df(df: pd.DataFrame):
+    df.to_csv(USERS_FILE, index=False)
+
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def user_exists(username: str) -> bool:
+    df = load_users_df()
+    return (df["username"] == username).any() if not df.empty else False
+
+
+def register_user(username: str, email: str, phone: str, password: str) -> bool:
+    """Retorna True se cadastrou; False se usuário já existe."""
+    df = load_users_df()
+    if not df.empty and (df["username"] == username).any():
+        return False
+
+    new_row = {
+        "username": username,
+        "email": email,
+        "phone": phone,
+        "password_hash": hash_password(password),
+    }
+
+    if df.empty:
+        df = pd.DataFrame([new_row])
+    else:
+        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+
+    save_users_df(df)
+    return True
+
 
 def check_credentials(username: str, password: str) -> bool:
-    if username not in USERS:
+    df = load_users_df()
+    if df.empty:
         return False
-    hash_pass = hashlib.sha256(password.encode()).hexdigest()
-    return hash_pass == USERS[username]
+    row = df[df["username"] == username]
+    if row.empty:
+        return False
+    stored_hash = row.iloc[0]["password_hash"]
+    return stored_hash == hash_password(password)
 
 
 def login_page():
-    st.title("🔐 Login – Dashboard Financeiro")
+    st.title("🔐 Acesso – Dashboard Financeiro")
 
-    with st.form("login_form"):
-        username = st.text_input("Usuário")
-        password = st.text_input("Senha", type="password")
-        submitted = st.form_submit_button("Entrar")
+    tab_login, tab_signup = st.tabs(["Entrar", "Cadastrar"])
 
-    if submitted:
-        if check_credentials(username, password):
-            st.session_state["auth"] = True
-            st.session_state["user"] = username
-            st.success("Login realizado com sucesso.")
-            st.experimental_rerun()
-        else:
-            st.error("Usuário ou senha inválidos.")
+    # ---- Aba de login ----
+    with tab_login:
+        st.subheader("Já tenho cadastro")
+        with st.form("login_form"):
+            username = st.text_input("Usuário")
+            password = st.text_input("Senha", type="password")
+            submitted = st.form_submit_button("Entrar")
+
+        if submitted:
+            if check_credentials(username, password):
+                st.session_state["auth"] = True
+                st.session_state["user"] = username
+                st.success("Login realizado com sucesso.")
+                st.experimental_rerun()
+            else:
+                st.error("Usuário ou senha inválidos.")
+
+    # ---- Aba de cadastro ----
+    with tab_signup:
+        st.subheader("Criar novo usuário")
+        with st.form("signup_form"):
+            new_username = st.text_input("Usuário (apelido)", key="su_username")
+            email = st.text_input("E-mail", key="su_email")
+            phone = st.text_input("Telefone (opcional)", key="su_phone")
+            password1 = st.text_input("Senha", type="password", key="su_pass1")
+            password2 = st.text_input("Confirmar senha", type="password", key="su_pass2")
+            submitted_signup = st.form_submit_button("Cadastrar")
+
+        if submitted_signup:
+            if not new_username or not email or not password1:
+                st.warning("Usuário, e-mail e senha são obrigatórios.")
+            elif password1 != password2:
+                st.warning("As senhas não conferem.")
+            elif user_exists(new_username):
+                st.error("Já existe um usuário com esse nome.")
+            else:
+                ok = register_user(new_username, email, phone, password1)
+                if ok:
+                    st.success("Usuário cadastrado com sucesso. Agora faça login na aba 'Entrar'.")
+                else:
+                    st.error("Não foi possível cadastrar. Tente outro usuário.")
 
 
 def require_login():
@@ -64,7 +136,6 @@ def require_login():
 
 
 def get_user_dir() -> Path:
-    """Pasta de dados do usuário logado."""
     user = st.session_state.get("user", "anon")
     user_dir = DATA_ROOT / user
     user_dir.mkdir(parents=True, exist_ok=True)
@@ -104,14 +175,14 @@ def load_assets():
         return pd.read_csv(assets_file)
     else:
         return pd.DataFrame(columns=[
-            "asset_type",        # Cripto, Ação, FII, Imóvel, Carro, Colecionável, Outro
-            "category",          # opcional
-            "name",              # nome descritivo
-            "symbol",            # BTC, PETR4, HGLG11...
-            "api_source",        # COINGECKO, BRAPI, MANUAL
-            "api_id",            # id no CoinGecko ou ticker
-            "quantity",          # quantidade
-            "manual_price_brl"   # preço unitário manual, se não tiver API
+            "asset_type",
+            "category",
+            "name",
+            "symbol",
+            "api_source",
+            "api_id",
+            "quantity",
+            "manual_price_brl",
         ])
 
 
@@ -123,10 +194,7 @@ def save_assets(df: pd.DataFrame):
 def fetch_crypto_prices_br(api_ids):
     if not api_ids:
         return {}
-    params = {
-        "ids": ",".join(api_ids),
-        "vs_currencies": "brl",
-    }
+    params = {"ids": ",".join(api_ids), "vs_currencies": "brl"}
     try:
         resp = requests.get(COINGECKO_API_URL, params=params, timeout=10)
         resp.raise_for_status()
@@ -146,7 +214,7 @@ def fetch_brapi_prices(symbols):
                 "range": "1d",
                 "interval": "1d",
                 "fundamental": "false",
-                "dividends": "false"
+                "dividends": "false",
             }
             resp = requests.get(url, params=params, timeout=10)
             resp.raise_for_status()
@@ -171,21 +239,18 @@ def compute_assets_values(df_assets: pd.DataFrame) -> pd.DataFrame:
     df["manual_price_brl"] = df["manual_price_brl"].fillna(0.0)
     df["current_price_brl"] = 0.0
 
-    # Cripto – CoinGecko
     mask_crypto = df["api_source"] == "COINGECKO"
     crypto_ids = df.loc[mask_crypto, "api_id"].dropna().unique().tolist()
     crypto_prices = fetch_crypto_prices_br(crypto_ids)
     if crypto_prices:
         df.loc[mask_crypto, "current_price_brl"] = df.loc[mask_crypto, "api_id"].map(crypto_prices).fillna(0.0)
 
-    # Ações/FIIs – Brapi
     mask_brapi = df["api_source"] == "BRAPI"
     symbols = df.loc[mask_brapi, "api_id"].dropna().unique().tolist()
     stock_prices = fetch_brapi_prices(symbols)
     if stock_prices:
         df.loc[mask_brapi, "current_price_brl"] = df.loc[mask_brapi, "api_id"].map(stock_prices).fillna(0.0)
 
-    # MANUAL
     mask_manual = df["api_source"] == "MANUAL"
     df.loc[mask_manual, "current_price_brl"] = df.loc[mask_manual, "manual_price_brl"]
 
@@ -460,7 +525,7 @@ def page_patrimonio():
 # ==========================
 
 def main():
-    require_login()  # força login antes de qualquer coisa
+    require_login()
 
     if "current_page" not in st.session_state:
         st.session_state["current_page"] = "Dashboard"
@@ -494,4 +559,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
