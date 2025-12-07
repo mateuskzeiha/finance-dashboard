@@ -5,9 +5,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import hashlib
 import random
-import smtplib
-import ssl
-from email.message import EmailMessage
 
 # ==========================
 # CONFIG BÁSICA
@@ -53,7 +50,7 @@ def sanitize_email_for_folder(email: str) -> str:
 
 
 # ==========================
-# ENVIO DE EMAIL
+# ENVIO DE "EMAIL" – MODO DEV
 # ==========================
 
 def send_login_code_email(email_to: str, code: str):
@@ -63,48 +60,9 @@ def send_login_code_email(email_to: str, code: str):
     Depois, quando tiver SMTP configurado, voltamos a mandar o e-mail de verdade.
     """
     st.warning(
-        f"[MODO DEV] Código de acesso enviado para {email_to}: "
-        f"**{code}**\n\n"
+        f"[MODO DEV] Código de acesso enviado para {email_to}: **{code}**\n\n"
         "Quando o SMTP estiver configurado, essa mensagem some e o código será enviado por e-mail."
     )
-
-    smtp_server = cfg.get("smtp_server")
-    smtp_port = int(cfg.get("smtp_port", 587))
-    smtp_user = cfg.get("smtp_user")
-    smtp_password = cfg.get("smtp_password")
-    from_name = cfg.get("from_name", "Dashboard Financeiro")
-
-    subject = "Seu código de acesso – Dashboard Financeiro"
-    body = f"""
-Olá,
-
-Seu código de acesso é:
-
-    {code}
-
-Ele expira em 10 minutos.
-
-Se você não solicitou este código, pode ignorar este e-mail.
-
-Atenciosamente,
-{from_name}
-"""
-
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = f"{from_name} <{smtp_user}>"
-    msg["To"] = email_to
-    msg.set_content(body)
-
-    context = ssl.create_default_context()
-    try:
-        with smtplib.SMTP(smtp_server, smtp_port) as server:
-            server.starttls(context=context)
-            server.login(smtp_user, smtp_password)
-            server.send_message(msg)
-    except Exception as e:
-        st.error(f"Erro ao enviar e-mail de código: {e}")
-        st.stop()
 
 
 # ==========================
@@ -124,7 +82,7 @@ def start_login_flow():
             name = st.text_input("Nome")
             email = st.text_input("E-mail")
             phone = st.text_input("Telefone (opcional)")
-            submitted = st.form_submit_button("Enviar código por e-mail")
+            submitted = st.form_submit_button("Enviar código")
 
         if submitted:
             if not email or not name:
@@ -165,17 +123,17 @@ def start_login_flow():
 
             save_users_df(df_users)
 
-            # Envia o código por e-mail
+            # "Envia" o código (mostra na tela em modo DEV)
             send_login_code_email(email, code)
 
             st.session_state["pending_email"] = email
-            st.success(f"Código enviado para {email}. Verifique seu e-mail.")
+            st.success(f"Código gerado para {email}. Use o código exibido acima para entrar.")
             st.experimental_rerun()
 
     else:
         # Etapa de digitar o código
         email = st.session_state["pending_email"]
-        st.subheader(f"Digite o código enviado para {email}")
+        st.subheader(f"Digite o código enviado para {email} (exibido acima em modo DEV)")
 
         with st.form("confirm_code_form"):
             code_input = st.text_input("Código de 6 dígitos")
@@ -208,7 +166,8 @@ def start_login_flow():
             st.session_state["auth"] = True
             st.session_state["user_email"] = email
             st.session_state["user_name"] = row.iloc[0]["name"]
-            del st.session_state["pending_email"]
+            if "pending_email" in st.session_state:
+                del st.session_state["pending_email"]
             st.success("Login realizado com sucesso.")
             st.experimental_rerun()
 
@@ -328,18 +287,21 @@ def compute_assets_values(df_assets: pd.DataFrame) -> pd.DataFrame:
     df["manual_price_brl"] = df["manual_price_brl"].fillna(0.0)
     df["current_price_brl"] = 0.0
 
+    # Cripto (CoinGecko)
     mask_crypto = df["api_source"] == "COINGECKO"
     crypto_ids = df.loc[mask_crypto, "api_id"].dropna().unique().tolist()
     crypto_prices = fetch_crypto_prices_br(crypto_ids)
     if crypto_prices:
         df.loc[mask_crypto, "current_price_brl"] = df.loc[mask_crypto, "api_id"].map(crypto_prices).fillna(0.0)
 
+    # Ações/FIIs (Brapi)
     mask_brapi = df["api_source"] == "BRAPI"
     symbols = df.loc[mask_brapi, "api_id"].dropna().unique().tolist()
     stock_prices = fetch_brapi_prices(symbols)
     if stock_prices:
         df.loc[mask_brapi, "current_price_brl"] = df.loc[mask_brapi, "api_id"].map(stock_prices).fillna(0.0)
 
+    # Manual
     mask_manual = df["api_source"] == "MANUAL"
     df.loc[mask_manual, "current_price_brl"] = df.loc[mask_manual, "manual_price_brl"]
 
@@ -623,7 +585,7 @@ def main():
 
     with st.sidebar:
         st.title("💰 Finanças Pessoais")
-        st.caption(f"Usuário: {st.session_state.get('user_name', '')}\n{st.session_state.get('user_email', '')}")
+        st.caption(f"{st.session_state.get('user_name', '')}\n{st.session_state.get('user_email', '')}")
 
         selected = st.radio(
             "Navegação",
