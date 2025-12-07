@@ -1,9 +1,13 @@
 import streamlit as st
 import pandas as pd
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import hashlib
+import random
+import smtplib
+import ssl
+from email.message import EmailMessage
 
 # ==========================
 # CONFIG BÁSICA
@@ -15,129 +19,213 @@ st.set_page_config(
     layout="wide"
 )
 
-DATA_ROOT = Path("financas_data")  # raiz
+DATA_ROOT = Path("financas_data")
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
+
+USERS_FILE = DATA_ROOT / "users.csv"
 
 COINGECKO_API_URL = "https://api.coingecko.com/api/v3/simple/price"
 BRAPI_URL = "https://brapi.dev/api/quote"
 
-USERS_FILE = DATA_ROOT / "users.csv"
-
 
 # ==========================
-# GESTÃO DE USUÁRIOS (CADASTRO + LOGIN)
+# FUNÇÕES AUXILIARES – USERS
 # ==========================
 
 def load_users_df() -> pd.DataFrame:
     if USERS_FILE.exists():
         return pd.read_csv(USERS_FILE)
     else:
-        return pd.DataFrame(columns=["username", "email", "phone", "password_hash"])
+        return pd.DataFrame(columns=["email", "name", "phone", "code_hash", "code_expiry"])
 
 
 def save_users_df(df: pd.DataFrame):
     df.to_csv(USERS_FILE, index=False)
 
 
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
+def hash_code(code: str) -> str:
+    return hashlib.sha256(code.encode()).hexdigest()
 
 
-def user_exists(username: str) -> bool:
-    df = load_users_df()
-    return (df["username"] == username).any() if not df.empty else False
+def sanitize_email_for_folder(email: str) -> str:
+    # transforma email em algo seguro para nome de pasta
+    return email.replace("@", "_at_").replace(".", "_dot_")
 
 
-def register_user(username: str, email: str, phone: str, password: str) -> bool:
-    """Retorna True se cadastrou; False se usuário já existe."""
-    df = load_users_df()
-    if not df.empty and (df["username"] == username).any():
-        return False
+# ==========================
+# ENVIO DE EMAIL
+# ==========================
 
-    new_row = {
-        "username": username,
-        "email": email,
-        "phone": phone,
-        "password_hash": hash_password(password),
-    }
+def send_login_code_email(email_to: str, code: str):
+    """
+    Envia o código de login por e-mail.
+    Usa as credenciais que você colocou em st.secrets["email"].
+    """
+    try:
+        cfg = st.secrets["email"]
+    except Exception:
+        st.error("Configuração de e-mail não encontrada em st.secrets['email'].")
+        st.stop()
 
-    if df.empty:
-        df = pd.DataFrame([new_row])
-    else:
-        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+    smtp_server = cfg.get("smtp_server")
+    smtp_port = int(cfg.get("smtp_port", 587))
+    smtp_user = cfg.get("smtp_user")
+    smtp_password = cfg.get("smtp_password")
+    from_name = cfg.get("from_name", "Dashboard Financeiro")
 
-    save_users_df(df)
-    return True
+    subject = "Seu código de acesso – Dashboard Financeiro"
+    body = f"""
+Olá,
+
+Seu código de acesso é:
+
+    {code}
+
+Ele expira em 10 minutos.
+
+Se você não solicitou este código, pode ignorar este e-mail.
+
+Atenciosamente,
+{from_name}
+"""
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = f"{from_name} <{smtp_user}>"
+    msg["To"] = email_to
+    msg.set_content(body)
+
+    context = ssl.create_default_context()
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls(context=context)
+            server.login(smtp_user, smtp_password)
+            server.send_message(msg)
+    except Exception as e:
+        st.error(f"Erro ao enviar e-mail de código: {e}")
+        st.stop()
 
 
-def check_credentials(username: str, password: str) -> bool:
-    df = load_users_df()
-    if df.empty:
-        return False
-    row = df[df["username"] == username]
-    if row.empty:
-        return False
-    stored_hash = row.iloc[0]["password_hash"]
-    return stored_hash == hash_password(password)
+# ==========================
+# LOGIN POR CÓDIGO
+# ==========================
 
-
-def login_page():
+def start_login_flow():
     st.title("🔐 Acesso – Dashboard Financeiro")
 
-    tab_login, tab_signup = st.tabs(["Entrar", "Cadastrar"])
+    df_users = load_users_df()
 
-    # ---- Aba de login ----
-    with tab_login:
-        st.subheader("Já tenho cadastro")
-        with st.form("login_form"):
-            username = st.text_input("Usuário")
-            password = st.text_input("Senha", type="password")
-            submitted = st.form_submit_button("Entrar")
+    # Se não tiver um e-mail pendente na sessão, começamos com formulário de e-mail
+    if "pending_email" not in st.session_state:
+        st.subheader("Informe seus dados para receber o código de acesso")
+
+        with st.form("request_code_form"):
+            name = st.text_input("Nome")
+            email = st.text_input("E-mail")
+            phone = st.text_input("Telefone (opcional)")
+            submitted = st.form_submit_button("Enviar código por e-mail")
 
         if submitted:
-            if check_credentials(username, password):
-                st.session_state["auth"] = True
-                st.session_state["user"] = username
-                st.success("Login realizado com sucesso.")
-                st.experimental_rerun()
-            else:
-                st.error("Usuário ou senha inválidos.")
+            if not email or not name:
+                st.warning("Nome e e-mail são obrigatórios.")
+                return
 
-    # ---- Aba de cadastro ----
-    with tab_signup:
-        st.subheader("Criar novo usuário")
-        with st.form("signup_form"):
-            new_username = st.text_input("Usuário (apelido)", key="su_username")
-            email = st.text_input("E-mail", key="su_email")
-            phone = st.text_input("Telefone (opcional)", key="su_phone")
-            password1 = st.text_input("Senha", type="password", key="su_pass1")
-            password2 = st.text_input("Confirmar senha", type="password", key="su_pass2")
-            submitted_signup = st.form_submit_button("Cadastrar")
+            # Gera código de 6 dígitos
+            code = f"{random.randint(100000, 999999)}"
+            code_hash = hash_code(code)
+            expiry = datetime.utcnow() + timedelta(minutes=10)
 
-        if submitted_signup:
-            if not new_username or not email or not password1:
-                st.warning("Usuário, e-mail e senha são obrigatórios.")
-            elif password1 != password2:
-                st.warning("As senhas não conferem.")
-            elif user_exists(new_username):
-                st.error("Já existe um usuário com esse nome.")
+            # Atualiza ou cria usuário
+            if df_users.empty:
+                df_users = pd.DataFrame([{
+                    "email": email,
+                    "name": name,
+                    "phone": phone,
+                    "code_hash": code_hash,
+                    "code_expiry": expiry.isoformat()
+                }])
             else:
-                ok = register_user(new_username, email, phone, password1)
-                if ok:
-                    st.success("Usuário cadastrado com sucesso. Agora faça login na aba 'Entrar'.")
+                mask = df_users["email"] == email
+                if mask.any():
+                    df_users.loc[mask, ["name", "phone", "code_hash", "code_expiry"]] = [
+                        name, phone, code_hash, expiry.isoformat()
+                    ]
                 else:
-                    st.error("Não foi possível cadastrar. Tente outro usuário.")
+                    df_users = pd.concat([
+                        df_users,
+                        pd.DataFrame([{
+                            "email": email,
+                            "name": name,
+                            "phone": phone,
+                            "code_hash": code_hash,
+                            "code_expiry": expiry.isoformat()
+                        }])
+                    ], ignore_index=True)
+
+            save_users_df(df_users)
+
+            # Envia o código por e-mail
+            send_login_code_email(email, code)
+
+            st.session_state["pending_email"] = email
+            st.success(f"Código enviado para {email}. Verifique seu e-mail.")
+            st.experimental_rerun()
+
+    else:
+        # Etapa de digitar o código
+        email = st.session_state["pending_email"]
+        st.subheader(f"Digite o código enviado para {email}")
+
+        with st.form("confirm_code_form"):
+            code_input = st.text_input("Código de 6 dígitos")
+            submitted_code = st.form_submit_button("Entrar")
+
+        if submitted_code:
+            df_users = load_users_df()
+            row = df_users[df_users["email"] == email]
+            if row.empty:
+                st.error("Usuário não encontrado. Volte e solicite o código novamente.")
+                return
+
+            stored_hash = row.iloc[0]["code_hash"]
+            expiry_str = row.iloc[0]["code_expiry"]
+            try:
+                expiry = datetime.fromisoformat(expiry_str)
+            except Exception:
+                expiry = datetime.utcnow() - timedelta(seconds=1)
+
+            if datetime.utcnow() > expiry:
+                st.warning("Código expirado. Solicite um novo código.")
+                del st.session_state["pending_email"]
+                return
+
+            if stored_hash != hash_code(code_input.strip()):
+                st.error("Código inválido.")
+                return
+
+            # Autenticação ok
+            st.session_state["auth"] = True
+            st.session_state["user_email"] = email
+            st.session_state["user_name"] = row.iloc[0]["name"]
+            del st.session_state["pending_email"]
+            st.success("Login realizado com sucesso.")
+            st.experimental_rerun()
+
+        if st.button("Voltar e trocar e-mail"):
+            del st.session_state["pending_email"]
+            st.experimental_rerun()
 
 
 def require_login():
-    if "auth" not in st.session_state or not st.session_state["auth"]:
-        login_page()
+    if not st.session_state.get("auth", False):
+        start_login_flow()
         st.stop()
 
 
 def get_user_dir() -> Path:
-    user = st.session_state.get("user", "anon")
-    user_dir = DATA_ROOT / user
+    email = st.session_state.get("user_email", "anon@local")
+    folder = sanitize_email_for_folder(email)
+    user_dir = DATA_ROOT / folder
     user_dir.mkdir(parents=True, exist_ok=True)
     return user_dir
 
@@ -284,7 +372,7 @@ def compute_monthly_summary(df_tx: pd.DataFrame):
 # ==========================
 
 def page_dashboard():
-    st.header(f"📊 Dashboard financeiro – {st.session_state.get('user', '')}")
+    st.header(f"📊 Dashboard financeiro – {st.session_state.get('user_name', '')}")
 
     df_tx = load_transactions()
     df_assets = load_assets()
@@ -534,7 +622,7 @@ def main():
 
     with st.sidebar:
         st.title("💰 Finanças Pessoais")
-        st.caption(f"Usuário: {st.session_state.get('user', '')}")
+        st.caption(f"Usuário: {st.session_state.get('user_name', '')}\n{st.session_state.get('user_email', '')}")
 
         selected = st.radio(
             "Navegação",
