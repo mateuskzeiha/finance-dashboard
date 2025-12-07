@@ -20,6 +20,31 @@ st.set_page_config(page_title="Dashboard Financeiro", layout="wide")
 
 DATA_FILE = "user_data.json"
 
+# Listas de ativos conhecidos (pode ir ampliando depois)
+CRYPTO_TICKERS = {
+    "BTC": "BTC-USD",
+    "ETH": "ETH-USD",
+    "SOL": "SOL-USD",
+    "XRP": "XRP-USD",
+    "ADA": "ADA-USD",
+}
+
+ACAO_TICKERS = {
+    "PETR4": "PETR4.SA",
+    "VALE3": "VALE3.SA",
+    "ITUB4": "ITUB4.SA",
+    "B3SA3": "B3SA3.SA",
+    "WEGE3": "WEGE3.SA",
+}
+
+FII_TICKERS = {
+    "MXRF11": "MXRF11.SA",
+    "HGLG11": "HGLG11.SA",
+    "KNRI11": "KNRI11.SA",
+    "XPML11": "XPML11.SA",
+    "BCFF11": "BCFF11.SA",
+}
+
 
 # ==============================
 # FUNÇÕES DE PERSISTÊNCIA
@@ -74,12 +99,10 @@ def normalize_df_receitas_despesas(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df.copy()
 
-    # Garante colunas mínimas
     for col in ["Data", "Categoria", "Descrição"]:
         if col not in df.columns:
             df[col] = ""
 
-    # Garante coluna Valor
     if "Valor" not in df.columns:
         possiveis = [c for c in df.columns if "valor" in c.lower()]
         if possiveis:
@@ -87,7 +110,6 @@ def normalize_df_receitas_despesas(df: pd.DataFrame) -> pd.DataFrame:
         else:
             df["Valor"] = 0.0
 
-    # Reordena colunas
     df = df[["Data", "Categoria", "Descrição", "Valor"]]
     return df
 
@@ -221,7 +243,13 @@ def yahoo_last_close(symbol: str):
             "https://query1.finance.yahoo.com/v8/finance/chart/"
             f"{urllib.parse.quote(symbol)}?range=1d&interval=1d"
         )
-        with urllib.request.urlopen(url, timeout=10) as resp:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0"
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
 
         result = data.get("chart", {}).get("result")
@@ -245,24 +273,44 @@ def yahoo_last_close(symbol: str):
 def get_asset_price_brl(asset_type: str, ticker: str):
     """
     Busca o preço em R$ usando Yahoo Finance via HTTP.
-    - Ação / FII: ticker da B3 -> .SA
-    - Criptomoeda: TICKER-USD e converte por USDBRL=X
+    - Ação / FII: usa dicionário + fallback .SA
+    - Criptomoeda: usa dicionário + fallback TICKER-USD e converte por USDBRL=X
     """
     ticker = ticker.strip().upper()
     if not ticker:
         return None
 
     try:
-        if asset_type in ["Ação", "FII"]:
-            yf_symbol = ticker
-            if not yf_symbol.endswith(".SA"):
-                yf_symbol += ".SA"
-            price_brl = yahoo_last_close(yf_symbol)
+        if asset_type == "Ação":
+            # Se estiver na lista, usa o mapeamento
+            if ticker in ACAO_TICKERS:
+                symbol = ACAO_TICKERS[ticker]
+            else:
+                symbol = ticker
+                if not symbol.endswith(".SA"):
+                    symbol += ".SA"
+
+            price_brl = yahoo_last_close(symbol)
+            return price_brl
+
+        elif asset_type == "FII":
+            if ticker in FII_TICKERS:
+                symbol = FII_TICKERS[ticker]
+            else:
+                symbol = ticker
+                if not symbol.endswith(".SA"):
+                    symbol += ".SA"
+
+            price_brl = yahoo_last_close(symbol)
             return price_brl
 
         elif asset_type == "Criptomoeda":
-            crypto_symbol = f"{ticker}-USD"
-            price_usd = yahoo_last_close(crypto_symbol)
+            if ticker in CRYPTO_TICKERS:
+                symbol = CRYPTO_TICKERS[ticker]
+            else:
+                symbol = f"{ticker}-USD"
+
+            price_usd = yahoo_last_close(symbol)
             if price_usd is None:
                 return None
             usd_brl = yahoo_last_close("USDBRL=X")
@@ -327,12 +375,10 @@ def login_page():
                 st.session_state["authenticated"] = True
                 st.session_state["user_email"] = email
 
-                # Limpa dados temporários do login
                 st.session_state["login_code"] = None
                 st.session_state["login_step"] = "email"
                 st.session_state["temp_email"] = None
 
-                # Carrega dados do usuário
                 load_user_data(email)
 
                 st.success("Login realizado com sucesso!")
@@ -450,10 +496,38 @@ def lancamentos_page():
                 "Tipo de ativo",
                 ["Criptomoeda", "Ação", "FII", "Outro"],
             )
-            ativo = st.text_input(
-                "Ticker / Nome do ativo",
-                help="Ex: BTC, PETR4, MXRF11. Para 'Outro', pode ser descrição livre.",
-            )
+
+            ativo = ""
+            ativo_label = ""
+            # Segmenta as listas
+            if tipo == "Criptomoeda":
+                opcoes = list(CRYPTO_TICKERS.keys()) + ["Outro"]
+                escolha = st.selectbox("Cripto", opcoes)
+                if escolha == "Outro":
+                    ativo = st.text_input("Ticker da cripto (ex: XRP, DOGE)")
+                else:
+                    ativo = escolha
+                ativo_label = ativo
+            elif tipo == "Ação":
+                opcoes = list(ACAO_TICKERS.keys()) + ["Outro"]
+                escolha = st.selectbox("Ação", opcoes)
+                if escolha == "Outro":
+                    ativo = st.text_input("Ticker da ação (ex: PETR4, VALE3)")
+                else:
+                    ativo = escolha
+                ativo_label = ativo
+            elif tipo == "FII":
+                opcoes = list(FII_TICKERS.keys()) + ["Outro"]
+                escolha = st.selectbox("FII", opcoes)
+                if escolha == "Outro":
+                    ativo = st.text_input("Ticker do FII (ex: MXRF11)")
+                else:
+                    ativo = escolha
+                ativo_label = ativo
+            else:
+                ativo = st.text_input("Descrição do ativo")
+                ativo_label = ativo
+
             qtd = st.number_input(
                 "Quantidade",
                 min_value=0.0,
@@ -477,7 +551,7 @@ def lancamentos_page():
             submitted_pat = st.form_submit_button("Adicionar patrimônio")
 
             if submitted_pat:
-                if not ativo:
+                if not ativo_label:
                     st.error("Informe o ativo.")
                 elif qtd <= 0:
                     st.error("Quantidade deve ser maior que zero.")
@@ -486,7 +560,7 @@ def lancamentos_page():
                     valor_total = 0.0
 
                     if usa_cotacao:
-                        preco = get_asset_price_brl(tipo, ativo)
+                        preco = get_asset_price_brl(tipo, ativo_label)
                         if preco is None:
                             st.error(
                                 "Não foi possível obter a cotação. "
@@ -501,13 +575,13 @@ def lancamentos_page():
                             valor_total = float(valor_manual)
                             preco = valor_total / qtd if qtd > 0 else 0.0
 
-                    if (usa_cotacao and preco is not None) or (
+                    if (usa_cotacao and preco is not None and preco > 0) or (
                         not usa_cotacao and valor_manual is not None and valor_manual > 0
                     ):
                         nova_linha = {
                             "Data": str(data_pat),
                             "Tipo": tipo,
-                            "Ativo": ativo.upper(),
+                            "Ativo": ativo_label.upper(),
                             "Quantidade": float(qtd),
                             "Preço_R$": float(preco),
                             "Valor_Total_R$": float(valor_total),
