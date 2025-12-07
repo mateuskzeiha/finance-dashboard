@@ -5,10 +5,12 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
+import urllib.request
+import urllib.error
+import urllib.parse
 
 import pandas as pd
 import streamlit as st
-import yfinance as yf
 
 # ==============================
 # CONFIGURAÇÕES GERAIS
@@ -122,7 +124,6 @@ def normalize_df_patrimonio(df: pd.DataFrame) -> pd.DataFrame:
         if possiveis_valor:
             df["Valor_Total_R$"] = df[possiveis_valor[0]]
         else:
-            # se não tiver, calcula aproximado
             try:
                 df["Valor_Total_R$"] = df["Quantidade"].astype(float) * df["Preço_R$"].astype(float)
             except Exception:
@@ -180,15 +181,12 @@ def save_user_data(email: str):
 def send_email_code(email_to: str, code: str):
     """
     Envia o código de login usando SMTP do iCloud.
-    Use e-mail @icloud.com/@me.com + senha de app (não a senha normal).
     """
 
-    # ===== AJUSTE AQUI COM SEUS DADOS =====
     smtp_server = "smtp.mail.me.com"
     smtp_port = 587  # TLS
-    smtp_user = "mateuskr@icloud.com"         # seu e-mail iCloud
-    smtp_password = "dklx-aojq-fond-tjfn"      # senha de app gerada na Apple
-    # ======================================
+    smtp_user = "mateuskr@icloud.com"
+    smtp_password = "dklx-aojq-fond-tjfn"
 
     subject = "Seu código de login - Dashboard Financeiro"
     body = f"Seu código de acesso é: {code}"
@@ -210,42 +208,66 @@ def send_email_code(email_to: str, code: str):
 
 
 # ==============================
-# FUNÇÕES DE COTAÇÃO / DATA
+# FUNÇÕES DE COTAÇÃO VIA YAHOO (SEM yfinance)
 # ==============================
+
+def yahoo_last_close(symbol: str):
+    """
+    Busca último preço de fechamento no Yahoo Finance via HTTP puro.
+    Retorna float ou None.
+    """
+    try:
+        url = (
+            "https://query1.finance.yahoo.com/v8/finance/chart/"
+            f"{urllib.parse.quote(symbol)}?range=1d&interval=1d"
+        )
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        result = data.get("chart", {}).get("result")
+        if not result:
+            return None
+        result = result[0]
+        quote = result.get("indicators", {}).get("quote", [])
+        if not quote:
+            return None
+        closes = quote[0].get("close", [])
+        if not closes:
+            return None
+        last = closes[-1]
+        if last is None:
+            return None
+        return float(last)
+    except Exception:
+        return None
+
 
 def get_asset_price_brl(asset_type: str, ticker: str):
     """
-    Busca o preço em R$ usando yfinance.
-    - Ação / FII: ticker B3 -> usa .SA se não tiver
-    - Criptomoeda: TICKER-USD e converte com USDBRL=X
-    Retorna float ou None.
+    Busca o preço em R$ usando Yahoo Finance via HTTP.
+    - Ação / FII: ticker da B3 -> .SA
+    - Criptomoeda: TICKER-USD e converte por USDBRL=X
     """
     ticker = ticker.strip().upper()
+    if not ticker:
+        return None
+
     try:
         if asset_type in ["Ação", "FII"]:
-            yf_ticker = ticker
-            if not yf_ticker.endswith(".SA"):
-                yf_ticker += ".SA"
-
-            data = yf.Ticker(yf_ticker).history(period="1d")
-            if data.empty:
-                return None
-            price = float(data["Close"].iloc[-1])
-            return price
+            yf_symbol = ticker
+            if not yf_symbol.endswith(".SA"):
+                yf_symbol += ".SA"
+            price_brl = yahoo_last_close(yf_symbol)
+            return price_brl
 
         elif asset_type == "Criptomoeda":
-            # Ex: BTC-USD, ETH-USD
-            yf_ticker = f"{ticker}-USD"
-            data = yf.Ticker(yf_ticker).history(period="1d")
-            if data.empty:
+            crypto_symbol = f"{ticker}-USD"
+            price_usd = yahoo_last_close(crypto_symbol)
+            if price_usd is None:
                 return None
-            price_usd = float(data["Close"].iloc[-1])
-
-            usdbrl_data = yf.Ticker("USDBRL=X").history(period="1d")
-            if usdbrl_data.empty:
+            usd_brl = yahoo_last_close("USDBRL=X")
+            if usd_brl is None:
                 return None
-            usd_brl = float(usdbrl_data["Close"].iloc[-1])
-
             return price_usd * usd_brl
 
         else:
@@ -292,7 +314,6 @@ def login_page():
                 else:
                     st.error("Não foi possível enviar o código por e-mail.")
                     st.info(f"Erro técnico: {err}")
-                    # Modo teste
                     st.info(f"(Modo teste) Código gerado: {code}")
 
     elif st.session_state["login_step"] == "code":
