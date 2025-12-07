@@ -5,6 +5,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import hashlib
 import random
+import smtplib
+import ssl
+from email.message import EmailMessage
 
 # ==========================
 # CONFIG BÁSICA
@@ -50,19 +53,57 @@ def sanitize_email_for_folder(email: str) -> str:
 
 
 # ==========================
-# ENVIO DE "EMAIL" – MODO DEV
+# ENVIO DE EMAIL – CÓDIGO DE LOGIN
 # ==========================
 
 def send_login_code_email(email_to: str, code: str):
     """
-    MODO DESENVOLVIMENTO:
-    Em vez de enviar e-mail, apenas mostra o código na tela.
-    Depois, quando tiver SMTP configurado, voltamos a mandar o e-mail de verdade.
+    Envia o código de login por e-mail usando as credenciais em st.secrets["email"].
+    NÃO mostra o código na tela.
     """
-    st.warning(
-        f"[MODO DEV] Código de acesso enviado para {email_to}: **{code}**\n\n"
-        "Quando o SMTP estiver configurado, essa mensagem some e o código será enviado por e-mail."
-    )
+    try:
+        cfg = st.secrets["email"]
+    except Exception:
+        st.error("Configuração de e-mail não encontrada em st.secrets['email'].")
+        st.stop()
+
+    smtp_server = cfg.get("smtp_server")
+    smtp_port = int(cfg.get("smtp_port", 587))
+    smtp_user = cfg.get("smtp_user")
+    smtp_password = cfg.get("smtp_password")
+    from_name = cfg.get("from_name", "Dashboard Financeiro")
+
+    subject = "Seu código de acesso – Dashboard Financeiro"
+    body = f"""
+Olá,
+
+Seu código de acesso é:
+
+    {code}
+
+Ele expira em 10 minutos.
+
+Se você não solicitou este código, pode ignorar este e-mail.
+
+Atenciosamente,
+{from_name}
+"""
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = f"{from_name} <{smtp_user}>"
+    msg["To"] = email_to
+    msg.set_content(body)
+
+    context = ssl.create_default_context()
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls(context=context)
+            server.login(smtp_user, smtp_password)
+            server.send_message(msg)
+    except Exception as e:
+        st.error(f"Não foi possível enviar o código por e-mail. Detalhe técnico: {e}")
+        st.stop()
 
 
 # ==========================
@@ -74,7 +115,7 @@ def start_login_flow():
 
     df_users = load_users_df()
 
-    # Se não tiver um e-mail pendente na sessão, começamos com formulário de e-mail
+    # 1ª etapa: pedir nome + e-mail
     if "pending_email" not in st.session_state:
         st.subheader("Informe seus dados para receber o código de acesso")
 
@@ -82,7 +123,7 @@ def start_login_flow():
             name = st.text_input("Nome")
             email = st.text_input("E-mail")
             phone = st.text_input("Telefone (opcional)")
-            submitted = st.form_submit_button("Enviar código")
+            submitted = st.form_submit_button("Enviar código por e-mail")
 
         if submitted:
             if not email or not name:
@@ -123,17 +164,17 @@ def start_login_flow():
 
             save_users_df(df_users)
 
-            # "Envia" o código (mostra na tela em modo DEV)
+            # Envia o código por e-mail (não mostra na tela)
             send_login_code_email(email, code)
 
             st.session_state["pending_email"] = email
-            st.success(f"Código gerado para {email}. Use o código exibido acima para entrar.")
-            st.experimental_rerun()
+            st.success(f"Código enviado para {email}. Verifique sua caixa de entrada.")
+            st.rerun()
 
+    # 2ª etapa: digitar o código recebido por e-mail
     else:
-        # Etapa de digitar o código
         email = st.session_state["pending_email"]
-        st.subheader(f"Digite o código enviado para {email} (exibido acima em modo DEV)")
+        st.subheader(f"Digite o código enviado para {email}")
 
         with st.form("confirm_code_form"):
             code_input = st.text_input("Código de 6 dígitos")
@@ -169,11 +210,11 @@ def start_login_flow():
             if "pending_email" in st.session_state:
                 del st.session_state["pending_email"]
             st.success("Login realizado com sucesso.")
-            st.experimental_rerun()
+            st.rerun()
 
         if st.button("Voltar e trocar e-mail"):
             del st.session_state["pending_email"]
-            st.experimental_rerun()
+            st.rerun()
 
 
 def require_login():
@@ -367,11 +408,11 @@ def page_dashboard():
     with c1:
         if st.button("➕ Lançar receita / despesa", use_container_width=True):
             st.session_state["current_page"] = "Lançamentos"
-            st.experimental_rerun()
+            st.rerun()
     with c2:
         if st.button("🏦 Atualizar patrimônio / investimentos", use_container_width=True):
             st.session_state["current_page"] = "Patrimônio / Investimentos"
-            st.experimental_rerun()
+            st.rerun()
 
     st.markdown("---")
 
@@ -596,7 +637,7 @@ def main():
         st.markdown("---")
         if st.button("Sair (logout)"):
             st.session_state.clear()
-            st.experimental_rerun()
+            st.rerun()
 
     st.session_state["current_page"] = selected
 
