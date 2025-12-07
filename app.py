@@ -58,14 +58,15 @@ def sanitize_email_for_folder(email: str) -> str:
 
 def send_login_code_email(email_to: str, code: str):
     """
-    Envia o código de login por e-mail.
-    Usa as credenciais que você colocou em st.secrets["email"].
+    MODO DESENVOLVIMENTO:
+    Em vez de enviar e-mail, apenas mostra o código na tela.
+    Depois, quando tiver SMTP configurado, voltamos a mandar o e-mail de verdade.
     """
-    try:
-        cfg = st.secrets["email"]
-    except Exception:
-        st.error("Configuração de e-mail não encontrada em st.secrets['email'].")
-        st.stop()
+    st.warning(
+        f"[MODO DEV] Código de acesso enviado para {email_to}: "
+        f"**{code}**\n\n"
+        "Quando o SMTP estiver configurado, essa mensagem some e o código será enviado por e-mail."
+    )
 
     smtp_server = cfg.get("smtp_server")
     smtp_port = int(cfg.get("smtp_port", 587))
